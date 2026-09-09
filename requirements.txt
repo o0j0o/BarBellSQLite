@@ -1,0 +1,10 @@
+pyodbc>=5.0
+python-dotenv>=1.0
+pytest>=8.0
+python-barcode>=0.16
+Pillow>=11.0
+
+# Test-only: independently decode rendered barcodes to catch encoding
+# mistakes (see tests/test_barcode_image.py) - not used by the app itself.
+zxing-cpp>=3.1
+numpy>=2.0

@@ -1,0 +1,10 @@
+.env
+settings.json
+sscc_state.json
+sscc_state.archived-*.json
+output/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
