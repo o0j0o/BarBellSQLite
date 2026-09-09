@@ -43,7 +43,8 @@ from src.settings import load_settings
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
 
 APP_ROOT = Path(__file__).resolve().parent
-ICON_PATH = APP_ROOT / "assets" / "barbell_icon.png"  # square icon-only mark, used for the taskbar icon
+ICON_PATH = APP_ROOT / "assets" / "barbell_icon.png"  # plain icon-only mark, used as header/About fallback
+APP_ICON_PATH = APP_ROOT / "assets" / "barbell_app_icon.png"  # rounded-square app-icon tile, taskbar icon
 BARBELL_LOGO_PATH = APP_ROOT / "assets" / "barbell_logo.png"  # full wordmark (icon + "BarBell" text)
 CLC_LOGO_PATH = APP_ROOT / "assets" / "clc_logo.png"  # Caribbean Label Crafts Ltd company logo
 
@@ -121,7 +122,7 @@ class BarBellApp(tk.Tk):
 
     def _load_logos(self):
         # Taskbar icon stays the square icon-only mark, not the wordmark.
-        self._taskbar_icon = load_scaled_or_none(ICON_PATH, 32)
+        self._taskbar_icon = load_scaled_or_none(APP_ICON_PATH, 32) or load_scaled_or_none(ICON_PATH, 32)
         if self._taskbar_icon is not None:
             self.iconphoto(True, self._taskbar_icon)
 
