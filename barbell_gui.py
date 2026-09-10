@@ -41,6 +41,7 @@ from src.labels import (
 )
 from src.settings import load_settings
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
+from src.version import BUILD_DATE, version_string
 
 APP_ROOT = Path(__file__).resolve().parent
 ICON_PATH = APP_ROOT / "assets" / "barbell_icon.png"  # plain icon-only mark, used as header/About fallback
@@ -575,7 +576,9 @@ class BarBellApp(tk.Tk):
 
         ttk.Label(frame, text=APP_DESCRIPTION, justify="center").pack(pady=10)
         ttk.Label(frame, text="© 2026 Caribbean Label Crafts Ltd.").pack()
-        ttk.Label(frame, text="Designed by: Greg Coles").pack(pady=(0, 15))
+        ttk.Label(frame, text="Designed by: Greg Coles").pack()
+        ttk.Label(frame, text=f"Version: {version_string()}").pack()
+        ttk.Label(frame, text=f"Build date: {BUILD_DATE}").pack(pady=(0, 15))
 
         ttk.Button(frame, text="Setup...", command=self._prompt_setup_password).pack()
 
