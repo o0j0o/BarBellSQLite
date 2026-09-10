@@ -2,6 +2,7 @@
 settings.json
 sscc_state.json
 sscc_state.archived-*.json
+gtin_audit_log.jsonl
 output/
 __pycache__/
 *.pyc

@@ -57,3 +57,34 @@ def normalize_gtin(raw: str | None) -> str:
         )
 
     return digits.zfill(14)
+
+
+# --- GTIN source classification, for audit logging (see src/audit.py) ------
+#
+# While allow_manual_gtin_override is True (the Beta default - see
+# Settings.allow_manual_gtin_override), a GTIN can end up being used three
+# ways, and every run's audit record says which:
+
+GTIN_SOURCE_LABEL_TRAXX = "label_traxx"
+GTIN_SOURCE_MANUAL_EMPTY = "manual_entry_empty_field"
+GTIN_SOURCE_MANUAL_OVERRIDE = "manual_override"
+
+
+def classify_gtin_source(bc_start_gtin: str | None, used_gtin: str) -> str:
+    """
+    bc_start_gtin: the validated, normalized GTIN from Product.BC_Start
+    (None if it was empty or failed validation).
+    used_gtin: the final, already-validated normalized GTIN actually used.
+
+    Returns GTIN_SOURCE_LABEL_TRAXX if used_gtin matches BC_Start exactly
+    (whether the user typed nothing, or retyped the same value, over the
+    prefilled textbox - nothing was actually changed either way);
+    GTIN_SOURCE_MANUAL_OVERRIDE if BC_Start had a valid value but a
+    different one was used instead; otherwise GTIN_SOURCE_MANUAL_EMPTY
+    (BC_Start was empty or itself invalid, so there was nothing to override).
+    """
+    if bc_start_gtin is not None and used_gtin == bc_start_gtin:
+        return GTIN_SOURCE_LABEL_TRAXX
+    if bc_start_gtin is not None and used_gtin != bc_start_gtin:
+        return GTIN_SOURCE_MANUAL_OVERRIDE
+    return GTIN_SOURCE_MANUAL_EMPTY

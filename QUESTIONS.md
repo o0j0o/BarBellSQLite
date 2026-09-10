@@ -269,3 +269,50 @@ instead, for the new blocking-error display - see `_set_gtin_status_text(..., er
 manual GTIN entry available as a fallback despite the blocking language, say so and it's
 a small addition to restore (the bold-digit code is preserved in git history, in the item
 1 commit, if wanted back verbatim).
+
+**Update (2026-09-10, see item 13 below): manual GTIN entry is back**, as a deliberate
+amendment - the "no manual override" design above turned out to be premature, since CLC
+is still in the process of getting GTINs into Label Traxx. The bold-digit code was NOT
+restored verbatim, though, since the amendment's UI is different (an always-visible
+textbox, not a button-triggered dialog) - if bolding the digits in the new textbox is
+wanted, that's a fresh, small addition, not a revert.
+
+## 13. Amendment: manual GTIN entry always available in Beta - BUILT (2026-09-10)
+
+Supersedes item 3's "no manual override" rule. CLC is still registering GTINs into Label
+Traxx, so `Product.BC_Start` can't yet be treated as the sole authoritative source -
+manual entry is available for every run while in Beta, not only when BC_Start is empty.
+
+- **Config flag**: `Settings.allow_manual_gtin_override` (default `True`). Not currently
+  exposed in `setup_gui.py`'s UI - editable via `settings.json` only, same as
+  `setup_password`. Say if you want a GUI toggle added too.
+- **Behaviour** (`barbell_gui.py`'s `_apply_gtin_entry_state_for_product()`/
+  `_resolve_gtin()`, `generate_labels.py`'s `resolve_gtin()`):
+  - Textbox always enabled, regardless of BC_Start, while the flag is on.
+  - Valid BC_Start -> prefilled as the default (CLI: press Enter to accept).
+  - Empty/invalid BC_Start -> textbox blank, warns naming the item number and
+    description.
+  - Entered value equals BC_Start (accepted as-is, or retyped identically) -> no extra
+    friction, proceeds as `"label_traxx"` sourced.
+  - Entered value differs from a *valid* BC_Start -> explicit confirmation required,
+    showing both values (GUI: `askyesno` dialog; CLI: y/N prompt) - declining blocks.
+  - Blank entry still blocks (`normalize_gtin("")` rejects it) - never proceeds without
+    a GTIN, no skip, no placeholder.
+  - Manually entered values are never written back to Label Traxx (unchanged note kept
+    on screen).
+- **Validation is the single shared code path** either way -
+  `src/gtin.py::normalize_gtin()`, unchanged from item 3/4.
+- **Audit log, every run**: `src/audit.py` appends one JSON-Lines record per generation
+  (`Settings.audit_log_file`, default `gtin_audit_log.jsonl`, gitignored) - BC_Start
+  value, value used, source (`label_traxx`/`manual_entry_empty_field`/
+  `manual_override`, via `src/gtin.py::classify_gtin_source()`), username
+  (`getpass.getuser()`), timestamp, and whether it was a test-mode run. Verified against
+  real data for all three source categories.
+- **When `allow_manual_gtin_override` is turned off** (Greg's call, not automatic): the
+  textbox reverts to enabled only when BC_Start is empty (GUI), and the CLI reverts to
+  `require_valid_gtin()`'s pure-blocking behaviour - no code change needed either way.
+
+**Beta-only measure - revisit before 1.0.0.** This permissive fallback exists because
+Label Traxx's GTIN data isn't authoritative yet. Before dropping Beta, decide whether
+`allow_manual_gtin_override` should default to `False` at that point (tightening GTIN
+sourcing back to Label Traxx alone), or stay a deliberate, ongoing choice.

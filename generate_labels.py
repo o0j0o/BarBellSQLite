@@ -7,9 +7,13 @@ Flow:
   2. Pick a packing slip for that job (all packing slips tied to the job via
      PackingSlip.TicketNum)
   3. A packing slip can carry multiple products - pick ONE (ProductNo + description)
-  4. GTIN comes from Product.BC_Start ("Barcode Start") - if it's missing or fails
-     validation (non-numeric, wrong length, bad check digit), this blocks and exits;
-     fix it in Label Traxx and re-run (QUESTIONS.md #4/#12 - no manual override)
+  4. GTIN comes from Product.BC_Start ("Barcode Start"), but while
+     Settings.allow_manual_gtin_override is True (the Beta default - CLC is still
+     registering GTINs into Label Traxx), manual entry is always available: a valid
+     BC_Start is offered as the default (press Enter to accept, or type a different
+     value - which asks for explicit confirmation before proceeding), and an empty
+     BC_Start prompts for one directly. Validation is unchanged either way. Every run
+     is recorded in the audit log (src/audit.py). See QUESTIONS.md #4/#12/#13.
   5. Units per package (manual - Label Traxx doesn't record physical packaging)
   6. Logistics labels per package (manual - e.g. 2 for a pallet needing labels
      on both sides, 1 for a carton)
@@ -35,6 +39,7 @@ from dotenv import load_dotenv
 from src.batch import build_batch_number
 from src.db.readonly_connection import ReadOnlyConnection
 from src.gs1 import build_contents_element_string, build_sscc_element_string
+from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -133,6 +138,56 @@ def require_valid_gtin(product):
     sys.exit(1)
 
 
+def resolve_gtin(product, settings) -> str:
+    """
+    Beta default (settings.allow_manual_gtin_override=True): manual entry is
+    always available, not just when BC_Start is empty - CLC is still
+    registering GTINs into Label Traxx, so it can't yet be treated as the
+    sole authoritative source. A valid BC_Start is offered as the default
+    (Enter accepts it); typing something different requires explicit
+    confirmation, since that's the one case where the operator is knowingly
+    overriding known data. Never returns without a valid GTIN.
+
+    Once the flag is off, this reverts to require_valid_gtin()'s pure
+    blocking behaviour - BC_Start only, no override, no code change needed.
+    """
+    if not settings.allow_manual_gtin_override:
+        require_valid_gtin(product)
+        return product.gtin
+
+    if product.gtin:
+        raw = input(f"GTIN [{product.gtin_raw}] (Enter to accept): ").strip()
+        if not raw:
+            raw = product.gtin_raw
+    else:
+        print(
+            f"\nNo GTIN on file in Label Traxx for item {product.item_number} "
+            f"({product.description})."
+        )
+        raw = prompt("GTIN: ")
+
+    while True:
+        try:
+            normalized = normalize_gtin(raw)
+            break
+        except InvalidGTINError as exc:
+            print(str(exc))
+            raw = prompt("GTIN: ")
+
+    if classify_gtin_source(product.gtin, normalized) == GTIN_SOURCE_MANUAL_OVERRIDE:
+        print(
+            f"\nLabel Traxx has GTIN {product.gtin} on file for this item.\n"
+            f"You are about to use {normalized} instead - this will NOT be saved "
+            "back to Label Traxx."
+        )
+        confirm = input("Continue with the different value? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print("Cancelled - no SSCCs were issued.")
+            sys.exit(0)
+
+    return normalized
+
+
 def print_gs1_preview(gtin, production_date, first_package_qty, batch, sscc):
     print("\nGS1-128 element strings for package 1:")
     print(f"  Contents: {build_contents_element_string(gtin, production_date, first_package_qty, batch)}")
@@ -202,8 +257,7 @@ def main():
         line_item = choose_product(conn, slip.number)
         product = get_product_info(conn, line_item.product_number)
 
-        require_valid_gtin(product)
-        gtin = product.gtin
+        gtin = resolve_gtin(product, settings)
 
         units_per_package = prompt_int("Units per package: ")
         labels_per_package = prompt_int("Logistics labels per package: ")
@@ -253,6 +307,8 @@ def main():
             units_per_package=units_per_package,
             labels_per_package=labels_per_package,
             production_date=production_date,
+            gtin_override=gtin,
+            audit_log_file=settings.audit_log_file,
             test_mode=test_mode,
         )
 

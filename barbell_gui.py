@@ -32,6 +32,7 @@ from src.gs1 import (
     build_sscc_barcode_data,
     build_sscc_element_string,
 )
+from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -196,6 +197,16 @@ class BarBellApp(tk.Tk):
         self.gtin_status_label = ttk.Label(product_frame, text="", wraplength=600, justify="left")
         self.gtin_status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+        ttk.Label(product_frame, text="GTIN:").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.gtin_entry_var = tk.StringVar()
+        self.gtin_entry = ttk.Entry(product_frame, textvariable=self.gtin_entry_var, width=30)
+        self.gtin_entry.grid(row=2, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(
+            product_frame,
+            text="Manually entered values are never saved back to Label Traxx.",
+            font=("", 8),
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
+
         pkg_frame = ttk.LabelFrame(self, text="4. Package Details", padding=10)
         pkg_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
 
@@ -275,6 +286,8 @@ class BarBellApp(tk.Tk):
         self._selected_line_item = None
         self._product = None
         self._set_gtin_status_text("")
+        self.gtin_entry_var.set("")
+        self.gtin_entry.config(state="normal")
 
     def _on_slip_selected(self, _event):
         selection = self.slip_listbox.curselection()
@@ -314,24 +327,72 @@ class BarBellApp(tk.Tk):
             return
 
         self._product = product
+        self._apply_gtin_entry_state_for_product(product)
+
+    def _apply_gtin_entry_state_for_product(self, product):
+        """
+        Sets the status label, textbox content, and textbox enabled state for
+        a newly-selected product. Split out from _on_product_selected() (which
+        needs a live DB lookup) so this part - the actual prefill/warning
+        logic - is directly testable.
+        """
+        override_allowed = self.settings.allow_manual_gtin_override
+
         if product.gtin:
             self._set_gtin_status_text(f"GTIN on file: {product.gtin}")
+            self.gtin_entry_var.set(product.gtin_raw or "")
+            # Beta default: always editable. Once allow_manual_gtin_override
+            # is turned off, a valid BC_Start becomes authoritative again and
+            # the field is locked to it - no code change needed to tighten.
+            self.gtin_entry.config(state="normal" if override_allowed else "disabled")
             return
 
-        # Blocking, not dismissible: product.gtin stays None, which
-        # _gather_preview_inputs() refuses to proceed past - dismissing this
-        # popup doesn't lift the block, it just closes the popup.
-        detail = (
-            f"Item {product.item_number} (P/N {product.prod_num}): {product.gtin_error}\n"
-            f'Value found in Label Traxx (Barcode Start): {product.gtin_raw!r}\n\n'
-            "Fix this in Label Traxx, then reselect the product."
+        # No usable value on file - the textbox is always enabled here
+        # (there's nothing to fall back on), and it's required: normalize_gtin
+        # rejects blank input, so _resolve_gtin() blocks Preview/Generate
+        # until something valid is typed in. Not dismissible: closing this
+        # popup doesn't lift that block.
+        self.gtin_entry_var.set("")
+        self.gtin_entry.config(state="normal")
+        messagebox.showwarning(
+            "No GTIN on file",
+            f"No GTIN on file in Label Traxx for item {product.item_number} "
+            f"({product.description}).\n\nEnter one below to continue.",
         )
-        messagebox.showerror("Invalid GTIN in Label Traxx", detail)
         self._set_gtin_status_text(
-            f"BLOCKED - item {product.item_number} (P/N {product.prod_num}): "
-            f"{product.gtin_error} Value found: {product.gtin_raw!r}",
+            f"No GTIN on file for item {product.item_number} ({product.description}) - "
+            "enter one below.",
             error=True,
         )
+
+    def _resolve_gtin(self):
+        """
+        Reads the GTIN textbox and validates it through the same code path
+        as Product.BC_Start. If it differs from a valid BC_Start value, this
+        is a deliberate override, and requires explicit confirmation before
+        proceeding - showing both values - since that's the one case where
+        the operator is knowingly overriding known Label Traxx data. Returns
+        the normalized GTIN to use, or None if blocked/declined (having
+        already shown the relevant error/prompt).
+        """
+        raw = self.gtin_entry_var.get()
+        try:
+            normalized = normalize_gtin(raw)
+        except InvalidGTINError as exc:
+            messagebox.showerror("Invalid GTIN", str(exc))
+            return None
+
+        if classify_gtin_source(self._product.gtin, normalized) == GTIN_SOURCE_MANUAL_OVERRIDE:
+            confirmed = messagebox.askyesno(
+                "Confirm GTIN override",
+                f"Label Traxx has GTIN {self._product.gtin} on file for this item.\n"
+                f"You are about to use {normalized} instead.\n\n"
+                "This will NOT be saved back to Label Traxx. Continue?",
+            )
+            if not confirmed:
+                return None
+
+        return normalized
 
     # --- generate --------------------------------------------------------
 
@@ -349,12 +410,9 @@ class BarBellApp(tk.Tk):
         if self._product is None:
             messagebox.showerror("Incomplete", "Couldn't load product info for this line item.")
             return None
-        if not self._product.gtin:
-            messagebox.showerror(
-                "GTIN required",
-                "This item's GTIN is missing or invalid in Label Traxx (Product.BC_Start / "
-                '"Barcode Start") - fix it there before generating labels.',
-            )
+
+        gtin = self._resolve_gtin()
+        if gtin is None:
             return None
 
         try:
@@ -377,7 +435,6 @@ class BarBellApp(tk.Tk):
         total_qty = line_item.ship_quantity
         test_mode = self.test_mode_var.get()
 
-        gtin = self._product.gtin
         batch = build_batch_number(job_number, self._product.prod_num)
         first_package_qty = min(units_per_package, total_qty)
         preview_sscc = (
@@ -507,6 +564,8 @@ class BarBellApp(tk.Tk):
                     units_per_package=units_per_package,
                     labels_per_package=labels_per_package,
                     production_date=production_date,
+                    gtin_override=info["gtin"],
+                    audit_log_file=self.settings.audit_log_file,
                     test_mode=test_mode,
                 )
         except Exception as exc:  # noqa: BLE001

@@ -20,14 +20,19 @@ row; only ProductNo feeds the batch. See QUESTIONS.md #2/#9.
 
 GTIN (AI 02) is sourced from Product.BC_Start ("Barcode Start"), validated by
 src.gtin.normalize_gtin(). It's free text in Label Traxx, so a missing or invalid
-value blocks label generation with a specific error rather than silently proceeding
-or falling back to manual entry - see get_product_info() and QUESTIONS.md #4/#12.
+value blocks label generation with a specific error. While
+Settings.allow_manual_gtin_override is True (the Beta default), a caller may pass
+gtin_override to use a different, already-validated value instead (manual entry, or
+confirming/overriding what's in Label Traxx) - every run's outcome is recorded via
+src.audit, regardless of source. See get_product_info() and QUESTIONS.md #4/#12/#13.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
+from src.audit import build_gtin_audit_record, record_gtin_audit
 from src.batch import build_batch_number
-from src.gtin import InvalidGTINError, normalize_gtin
+from src.gtin import InvalidGTINError, classify_gtin_source, normalize_gtin
 from src.sscc import SSCCGenerator, build_test_sscc
 
 
@@ -219,6 +224,8 @@ def assemble_label_rows(
     units_per_package: int,
     labels_per_package: int,
     production_date: str,
+    gtin_override: str | None = None,
+    audit_log_file: Path | str | None = None,
     test_mode: bool = False,
 ) -> list[LabelRow]:
     """
@@ -231,22 +238,49 @@ def assemble_label_rows(
     sscc_state.json is never touched. Use this to try out the whole flow
     without consuming (or needing to "recover") any real SSCCs.
 
-    Raises InvalidGTINError if the product's GTIN (Product.BC_Start) is
-    missing or invalid - callers should check product.gtin_error themselves
-    first (via get_product_info) to give a better-timed warning, but this is
-    enforced here too so a bad GTIN can never slip through regardless of the
-    caller - see QUESTIONS.md #12.
+    gtin_override, while Settings.allow_manual_gtin_override is True (the
+    Beta default), is the GTIN the caller resolved with the user - straight
+    from Product.BC_Start, entered manually because BC_Start was empty/
+    invalid, or a deliberate override of a valid BC_Start value (the caller
+    is responsible for getting explicit confirmation before passing a value
+    that differs from BC_Start - see barbell_gui.py/generate_labels.py).
+    Re-validated here regardless, via normalize_gtin(). If None, falls back
+    to Product.BC_Start and raises InvalidGTINError if that's missing/invalid
+    - a bad or missing GTIN can never slip through regardless of the caller.
+
+    If audit_log_file is given, records exactly what GTIN was used and how
+    (src.audit) - every run, not just overrides - see QUESTIONS.md #13.
     """
     if not test_mode and sscc_generator is None:
         raise ValueError("sscc_generator is required unless test_mode=True")
 
     ticket = get_ticket_info(conn, job_number)
     product = get_product_info(conn, line_item.product_number)
-    if product.gtin is None:
+
+    if gtin_override is not None:
+        used_gtin = normalize_gtin(gtin_override)
+    elif product.gtin is not None:
+        used_gtin = product.gtin
+    else:
         raise InvalidGTINError(
             f"Item {product.item_number} (P/N {product.prod_num}): "
             f"{product.gtin_error or 'GTIN is missing'}. "
             "Fix Product.BC_Start (\"Barcode Start\") in Label Traxx before generating labels."
+        )
+
+    if audit_log_file is not None:
+        record_gtin_audit(
+            build_gtin_audit_record(
+                job_number=ticket.job_number,
+                packing_slip_number=line_item.packing_slip_number,
+                product_no=product.prod_num,
+                item_number=product.item_number,
+                bc_start_value=product.gtin_raw,
+                gtin_used=used_gtin,
+                gtin_source=classify_gtin_source(product.gtin, used_gtin),
+                test_mode=test_mode,
+            ),
+            audit_log_file,
         )
 
     # Batch = job number + ProductNo (Product.ProdNum, the "P/N") - NOT item_number.
@@ -270,7 +304,7 @@ def assemble_label_rows(
                     batch=batch,
                     production_date=production_date,
                     sscc=sscc,
-                    gtin=product.gtin,
+                    gtin=used_gtin,
                     package_index=package_index,
                     label_copy_index=copy_index,
                 )

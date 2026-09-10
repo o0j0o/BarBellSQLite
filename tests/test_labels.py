@@ -310,3 +310,116 @@ def test_assemble_label_rows_requires_a_generator_unless_test_mode():
             labels_per_package=1,
             production_date="2026-03-23",
         )
+
+
+# --- gtin_override + audit logging (Beta manual-entry amendment) -----------
+
+def test_assemble_label_rows_uses_gtin_override_when_given():
+    """A caller-resolved override (manual entry, or a deliberate difference
+    from BC_Start) takes precedence over Product.BC_Start."""
+    rows = assemble_label_rows(
+        conn=make_fake_conn(bc_start=""),  # BC_Start empty - would normally block
+        sscc_generator=None,
+        job_number="122984",
+        line_item=make_line_item(),
+        units_per_package=27000,
+        labels_per_package=1,
+        production_date="2026-03-23",
+        gtin_override="00000012345670",
+        test_mode=True,
+    )
+    assert rows[0].gtin == "00000012345670"
+
+
+def test_assemble_label_rows_revalidates_gtin_override():
+    """Defense in depth: even a caller-supplied override must pass validation."""
+    with pytest.raises(InvalidGTINError):
+        assemble_label_rows(
+            conn=make_fake_conn(),
+            sscc_generator=None,
+            job_number="122984",
+            line_item=make_line_item(),
+            units_per_package=27000,
+            labels_per_package=1,
+            production_date="2026-03-23",
+            gtin_override="not-a-gtin",
+            test_mode=True,
+        )
+
+
+def test_assemble_label_rows_writes_audit_record_for_label_traxx_source(tmp_path):
+    log_file = tmp_path / "gtin_audit_log.jsonl"
+    assemble_label_rows(
+        conn=make_fake_conn(),  # VALID_BC_START, no override
+        sscc_generator=None,
+        job_number="122984",
+        line_item=make_line_item(),
+        units_per_package=27000,
+        labels_per_package=1,
+        production_date="2026-03-23",
+        audit_log_file=log_file,
+        test_mode=True,
+    )
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["job_number"] == "122984"
+    assert record["product_no"] == "47388"
+    assert record["gtin_used"] == VALID_GTIN
+    assert record["bc_start_value"] == VALID_BC_START
+    assert record["gtin_source"] == "label_traxx"
+    assert record["test_mode"] is True
+    assert record["username"]
+
+
+def test_assemble_label_rows_writes_audit_record_for_manual_override_source(tmp_path):
+    log_file = tmp_path / "gtin_audit_log.jsonl"
+    assemble_label_rows(
+        conn=make_fake_conn(),  # VALID_BC_START on file
+        sscc_generator=None,
+        job_number="122984",
+        line_item=make_line_item(),
+        units_per_package=27000,
+        labels_per_package=1,
+        production_date="2026-03-23",
+        gtin_override="00000012345670",  # different from BC_Start
+        audit_log_file=log_file,
+        test_mode=True,
+    )
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["bc_start_value"] == VALID_BC_START
+    assert record["gtin_used"] == "00000012345670"
+    assert record["gtin_source"] == "manual_override"
+
+
+def test_assemble_label_rows_writes_audit_record_for_manual_empty_source(tmp_path):
+    log_file = tmp_path / "gtin_audit_log.jsonl"
+    assemble_label_rows(
+        conn=make_fake_conn(bc_start=""),  # nothing on file
+        sscc_generator=None,
+        job_number="122984",
+        line_item=make_line_item(),
+        units_per_package=27000,
+        labels_per_package=1,
+        production_date="2026-03-23",
+        gtin_override="00000012345670",
+        audit_log_file=log_file,
+        test_mode=True,
+    )
+    record = json.loads(log_file.read_text(encoding="utf-8").strip())
+    assert record["bc_start_value"] == ""
+    assert record["gtin_source"] == "manual_entry_empty_field"
+
+
+def test_assemble_label_rows_skips_audit_logging_when_no_log_file_given(tmp_path):
+    """audit_log_file=None (the default) must not create anything - most
+    tests in this file rely on this to stay silent about audit logging."""
+    assemble_label_rows(
+        conn=make_fake_conn(),
+        sscc_generator=None,
+        job_number="122984",
+        line_item=make_line_item(),
+        units_per_package=27000,
+        labels_per_package=1,
+        production_date="2026-03-23",
+        test_mode=True,
+    )
+    assert list(tmp_path.iterdir()) == []

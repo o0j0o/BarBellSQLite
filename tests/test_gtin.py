@@ -1,6 +1,13 @@
 import pytest
 
-from src.gtin import InvalidGTINError, normalize_gtin
+from src.gtin import (
+    GTIN_SOURCE_LABEL_TRAXX,
+    GTIN_SOURCE_MANUAL_EMPTY,
+    GTIN_SOURCE_MANUAL_OVERRIDE,
+    InvalidGTINError,
+    classify_gtin_source,
+    normalize_gtin,
+)
 
 
 def test_normalize_gtin_pads_valid_13_digit_gtin_to_14():
@@ -73,3 +80,26 @@ def test_normalize_gtin_rejects_whitespace_only_string():
 def test_normalize_gtin_rejects_none():
     with pytest.raises(InvalidGTINError, match="empty"):
         normalize_gtin(None)
+
+
+# --- classify_gtin_source ---------------------------------------------------
+
+def test_classify_source_label_traxx_when_used_matches_bc_start():
+    """Covers both 'accepted the prefilled value' and 'retyped the identical
+    value' - either way, nothing was actually changed from Label Traxx."""
+    assert (
+        classify_gtin_source("00051096184921", "00051096184921") == GTIN_SOURCE_LABEL_TRAXX
+    )
+
+
+def test_classify_source_manual_override_when_used_differs_from_bc_start():
+    assert (
+        classify_gtin_source("00051096184921", "00000012345670")
+        == GTIN_SOURCE_MANUAL_OVERRIDE
+    )
+
+
+def test_classify_source_manual_empty_when_bc_start_was_none():
+    """BC_Start was empty or itself invalid (get_product_info already turned
+    that into gtin=None) - there was nothing to override."""
+    assert classify_gtin_source(None, "00000012345670") == GTIN_SOURCE_MANUAL_EMPTY

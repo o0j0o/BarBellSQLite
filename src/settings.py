@@ -26,6 +26,16 @@ class Settings:
     # app's About dialog - not real access control (anyone who can edit this
     # file can read or change it), just a "are you sure you meant to" gate.
     setup_password: str = "change4GOOD"
+    # Beta-only measure: CLC is still registering GTINs into Label Traxx, so
+    # Product.BC_Start can't yet be treated as the sole authoritative source -
+    # manual entry stays available for every run, not just when BC_Start is
+    # empty. Flip to False once BC_Start is trustworthy enough to be
+    # authoritative (see QUESTIONS.md - revisit before 1.0.0); the textbox
+    # then reverts to enabled only when BC_Start is empty, no code change.
+    allow_manual_gtin_override: bool = True
+    # Append-only audit trail (JSON Lines) of every GTIN sourcing decision -
+    # see src/audit.py.
+    audit_log_file: str = "gtin_audit_log.jsonl"
 
 
 def load_settings(path: Path | str = DEFAULT_SETTINGS_FILE) -> Settings:
