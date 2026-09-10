@@ -18,6 +18,7 @@ import datetime
 import subprocess
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
@@ -116,6 +117,14 @@ class BarBellApp(tk.Tk):
         self._product = None
         self._gtin_override = None
 
+        # Same family/size as the default ttk.Label font, only the weight
+        # differs - used to bold just the GTIN digits on the "entered for
+        # this run" line without touching font size, family, or colour.
+        default_font = tkfont.nametofont(ttk.Style().lookup("TLabel", "font") or "TkDefaultFont")
+        self._bold_font = tkfont.Font(
+            family=default_font.actual("family"), size=default_font.actual("size"), weight="bold"
+        )
+
         self._load_logos()
         self._build_widgets()
 
@@ -195,7 +204,10 @@ class BarBellApp(tk.Tk):
         self.product_listbox.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.product_listbox.bind("<<ListboxSelect>>", self._on_product_selected)
 
-        self.gtin_status_label = ttk.Label(product_frame, text="")
+        # A frame, not a Label, so the "entered for this run" line can render
+        # its GTIN digits in bold while the rest of the line stays the plain
+        # label font - ttk.Label can't mix font weights within one string.
+        self.gtin_status_label = ttk.Frame(product_frame)
         self.gtin_status_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.enter_gtin_button = ttk.Button(
             product_frame, text="Enter GTIN...", command=self._enter_gtin, state="disabled"
@@ -269,13 +281,29 @@ class BarBellApp(tk.Tk):
                 f"{slip.no_package} package(s) per Label Traxx",
             )
 
+    def _set_gtin_status_text(self, text: str):
+        """Plain, single-style status text - every case except the bold-digit one below."""
+        for child in self.gtin_status_label.winfo_children():
+            child.destroy()
+        if text:
+            ttk.Label(self.gtin_status_label, text=text).pack(side="left")
+
+    def _set_gtin_status_with_bold_digits(self, prefix: str, digits: str, suffix: str):
+        """Same line as _set_gtin_status_text, but `digits` renders bold - font
+        family, size, and colour are otherwise identical (see self._bold_font)."""
+        for child in self.gtin_status_label.winfo_children():
+            child.destroy()
+        ttk.Label(self.gtin_status_label, text=prefix).pack(side="left")
+        ttk.Label(self.gtin_status_label, text=digits, font=self._bold_font).pack(side="left")
+        ttk.Label(self.gtin_status_label, text=suffix).pack(side="left")
+
     def _reset_product_selection(self):
         self.product_listbox.delete(0, tk.END)
         self._line_items = []
         self._selected_line_item = None
         self._product = None
         self._gtin_override = None
-        self.gtin_status_label.config(text="")
+        self._set_gtin_status_text("")
         self.enter_gtin_button.config(state="disabled")
 
     def _on_slip_selected(self, _event):
@@ -318,11 +346,11 @@ class BarBellApp(tk.Tk):
 
         self._product = product
         if product.gtin:
-            self.gtin_status_label.config(text=f"GTIN on file: {product.gtin}")
+            self._set_gtin_status_text(f"GTIN on file: {product.gtin}")
             self.enter_gtin_button.config(state="disabled")
         else:
-            self.gtin_status_label.config(
-                text=f"No GTIN on file for item {product.item_number} - "
+            self._set_gtin_status_text(
+                f"No GTIN on file for item {product.item_number} - "
                 "enter one below, or add it in Label Traxx first."
             )
             self.enter_gtin_button.config(state="normal")
@@ -342,7 +370,9 @@ class BarBellApp(tk.Tk):
             return
 
         self._gtin_override = gtin
-        self.gtin_status_label.config(text=f"GTIN entered for this run: {gtin} (not saved to Label Traxx)")
+        self._set_gtin_status_with_bold_digits(
+            "GTIN entered for this run: ", gtin, " (not saved to Label Traxx)"
+        )
 
     # --- generate --------------------------------------------------------
 
