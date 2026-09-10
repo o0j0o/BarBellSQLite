@@ -20,8 +20,19 @@ def test_normalize_gtin_accepts_already_14_digit_gtin():
     assert normalize_gtin("00000012345670") == "00000012345670"
 
 
-def test_normalize_gtin_strips_whitespace():
+def test_normalize_gtin_strips_leading_and_trailing_whitespace():
     assert normalize_gtin("  12345670  ") == "00000012345670"
+
+
+def test_normalize_gtin_strips_internal_whitespace_too():
+    """
+    Real Product.BC_Start values in Label Traxx use spaces as UPC/EAN
+    grouping separators, e.g. '0 51096 18492 1' - this is a real value
+    pulled from the live database, and it's a genuinely valid UPC-A
+    (verified check digit), so it must be accepted, not rejected as
+    "non-numeric".
+    """
+    assert normalize_gtin("0 51096 18492 1") == "00051096184921"
 
 
 def test_normalize_gtin_rejects_wrong_check_digit():
@@ -37,3 +48,28 @@ def test_normalize_gtin_rejects_non_digit_characters():
 def test_normalize_gtin_rejects_invalid_length():
     with pytest.raises(InvalidGTINError, match="8, 12, 13, or 14"):
         normalize_gtin("123456789")  # 9 digits - not a valid GTIN length
+
+
+def test_normalize_gtin_rejects_invalid_length_after_stripping_real_short_value():
+    """
+    Another real Product.BC_Start value from the live database: '0 12061'
+    despaces to '012061' - only 6 digits, an incomplete/garbage entry that
+    must be caught, not silently accepted.
+    """
+    with pytest.raises(InvalidGTINError, match="8, 12, 13, or 14"):
+        normalize_gtin("0 12061")
+
+
+def test_normalize_gtin_rejects_empty_string():
+    with pytest.raises(InvalidGTINError, match="empty"):
+        normalize_gtin("")
+
+
+def test_normalize_gtin_rejects_whitespace_only_string():
+    with pytest.raises(InvalidGTINError, match="empty"):
+        normalize_gtin("   ")
+
+
+def test_normalize_gtin_rejects_none():
+    with pytest.raises(InvalidGTINError, match="empty"):
+        normalize_gtin(None)

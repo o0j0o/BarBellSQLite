@@ -18,13 +18,16 @@ Batch = job number + ProductNo (Product.ProdNum, the internal Label Traxx number
 user calls "P/N") - NOT the item number (Product.Name4). Both are carried on every
 row; only ProductNo feeds the batch. See QUESTIONS.md #2/#9.
 
-GTIN (AI 02) is intentionally left blank on every row unless entered manually - it
-isn't in Label Traxx yet (see QUESTIONS.md #4).
+GTIN (AI 02) is sourced from Product.BC_Start ("Barcode Start"), validated by
+src.gtin.normalize_gtin(). It's free text in Label Traxx, so a missing or invalid
+value blocks label generation with a specific error rather than silently proceeding
+or falling back to manual entry - see get_product_info() and QUESTIONS.md #4/#12.
 """
 
 from dataclasses import dataclass
 
 from src.batch import build_batch_number
+from src.gtin import InvalidGTINError, normalize_gtin
 from src.sscc import SSCCGenerator, build_test_sscc
 
 
@@ -109,20 +112,42 @@ class ProductInfo:
     prod_num: str  # internal Label Traxx number - the "P/N" / ProductNo (feeds the batch)
     item_number: str  # Product.Name4 - what's on the label (see docs/field_mapping.md)
     description: str
-    gtin: str | None = None  # not yet sourceable - see QUESTIONS.md #4
+    gtin: str | None = None  # validated, normalized 14-digit GTIN - None if missing/invalid
+    gtin_raw: str | None = None  # exact Product.BC_Start value as found, for diagnostics
+    gtin_error: str | None = None  # human-readable reason gtin is None, if BC_Start was populated but bad
 
 
 def get_product_info(conn, prod_num: str) -> ProductInfo:
+    """
+    GTIN (AI 02) is sourced from Product.BC_Start ("Barcode Start" in Label
+    Traxx's own UI) - free text, so it's validated here via
+    src.gtin.normalize_gtin(). An empty or invalid value does NOT raise -
+    gtin stays None and gtin_error explains why, so the caller can block
+    label generation with a clear, specific message (see QUESTIONS.md #4
+    and #12) rather than the lookup itself failing.
+    """
     cur = conn.execute(f"SELECT * FROM Product WHERE ProdNum = '{prod_num}' LIMIT 1")
     rows = cur.fetchall()
     if not rows:
         raise ValueError(f"No Product found for ProdNum {prod_num!r}")
     cols = [d[0] for d in cur.description]
     product = dict(zip(cols, rows[0]))
+
+    raw_gtin = product["BC_Start"]
+    gtin = None
+    gtin_error = None
+    try:
+        gtin = normalize_gtin(raw_gtin)
+    except InvalidGTINError as exc:
+        gtin_error = str(exc)
+
     return ProductInfo(
         prod_num=product["ProdNum"],
         item_number=product["Name4"],
         description=product["Description"],
+        gtin=gtin,
+        gtin_raw=raw_gtin,
+        gtin_error=gtin_error,
     )
 
 
@@ -194,7 +219,6 @@ def assemble_label_rows(
     units_per_package: int,
     labels_per_package: int,
     production_date: str,
-    gtin_override: str | None = None,
     test_mode: bool = False,
 ) -> list[LabelRow]:
     """
@@ -206,14 +230,24 @@ def assemble_label_rows(
     from build_test_sscc() instead, so sscc_generator can be None and
     sscc_state.json is never touched. Use this to try out the whole flow
     without consuming (or needing to "recover") any real SSCCs.
+
+    Raises InvalidGTINError if the product's GTIN (Product.BC_Start) is
+    missing or invalid - callers should check product.gtin_error themselves
+    first (via get_product_info) to give a better-timed warning, but this is
+    enforced here too so a bad GTIN can never slip through regardless of the
+    caller - see QUESTIONS.md #12.
     """
     if not test_mode and sscc_generator is None:
         raise ValueError("sscc_generator is required unless test_mode=True")
 
     ticket = get_ticket_info(conn, job_number)
     product = get_product_info(conn, line_item.product_number)
-    if gtin_override is not None:
-        product.gtin = gtin_override
+    if product.gtin is None:
+        raise InvalidGTINError(
+            f"Item {product.item_number} (P/N {product.prod_num}): "
+            f"{product.gtin_error or 'GTIN is missing'}. "
+            "Fix Product.BC_Start (\"Barcode Start\") in Label Traxx before generating labels."
+        )
 
     # Batch = job number + ProductNo (Product.ProdNum, the "P/N") - NOT item_number.
     batch = build_batch_number(ticket.job_number, product.prod_num)

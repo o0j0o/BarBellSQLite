@@ -1,6 +1,3 @@
-import tkinter.font as tkfont
-from tkinter import ttk
-
 import pytest
 
 from barbell_gui import BarBellApp, check_setup_password
@@ -42,36 +39,24 @@ def app():
     app.destroy()
 
 
-def test_gtin_entered_for_this_run_renders_digits_bold_rest_plain(app):
-    """
-    Item 1: only the GTIN digits on this line are bold - the prefix and the
-    "(not saved to Label Traxx)" suffix stay in the normal label font, and
-    the combined text must read exactly as before (no layout/wording change).
-    """
-    app._set_gtin_status_with_bold_digits(
-        "GTIN entered for this run: ", "06291041500213", " (not saved to Label Traxx)"
-    )
-    children = app.gtin_status_label.winfo_children()
-    assert [c.cget("text") for c in children] == [
-        "GTIN entered for this run: ",
-        "06291041500213",
-        " (not saved to Label Traxx)",
-    ]
-    # combined text reads identically to the original single-label string
-    assert "".join(c.cget("text") for c in children) == (
-        "GTIN entered for this run: 06291041500213 (not saved to Label Traxx)"
-    )
+def test_set_gtin_status_text_plain(app):
+    app._set_gtin_status_text("GTIN on file: 00051096184921")
+    assert app.gtin_status_label.cget("text") == "GTIN on file: 00051096184921"
+    assert str(app.gtin_status_label.cget("foreground")) == ""
 
-    prefix_label, digits_label, suffix_label = children
-    assert str(digits_label.cget("font")) == str(app._bold_font)
-    assert str(prefix_label.cget("font")) != str(app._bold_font)
-    assert str(suffix_label.cget("font")) != str(app._bold_font)
 
-    # family/size unchanged, only weight differs
-    default_font = tkfont.nametofont(ttk.Style().lookup("TLabel", "font") or "TkDefaultFont")
-    assert app._bold_font.actual("family") == default_font.actual("family")
-    assert app._bold_font.actual("size") == default_font.actual("size")
-    assert app._bold_font.actual("weight") == "bold"
+def test_set_gtin_status_text_error_renders_red(app):
+    """
+    Item 3: an invalid/missing GTIN is a blocking error, shown in red so it
+    stays visibly distinct from the normal "GTIN on file" state even after
+    the accompanying messagebox is dismissed.
+    """
+    app._set_gtin_status_text("BLOCKED - item 233458: GTIN is empty (no value)", error=True)
+    assert str(app.gtin_status_label.cget("foreground")) == "red"
+
+    # and it's not sticky - a later plain call clears the red
+    app._set_gtin_status_text("GTIN on file: 00051096184921")
+    assert str(app.gtin_status_label.cget("foreground")) == ""
 
 
 def test_about_dialog_shows_version_and_build_date_from_version_module(app):

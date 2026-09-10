@@ -18,7 +18,6 @@ import datetime
 import subprocess
 import sys
 import tkinter as tk
-import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
@@ -33,7 +32,6 @@ from src.gs1 import (
     build_sscc_barcode_data,
     build_sscc_element_string,
 )
-from src.gtin import InvalidGTINError, normalize_gtin
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -115,15 +113,6 @@ class BarBellApp(tk.Tk):
         self._line_items = []
         self._selected_line_item = None
         self._product = None
-        self._gtin_override = None
-
-        # Same family/size as the default ttk.Label font, only the weight
-        # differs - used to bold just the GTIN digits on the "entered for
-        # this run" line without touching font size, family, or colour.
-        default_font = tkfont.nametofont(ttk.Style().lookup("TLabel", "font") or "TkDefaultFont")
-        self._bold_font = tkfont.Font(
-            family=default_font.actual("family"), size=default_font.actual("size"), weight="bold"
-        )
 
         self._load_logos()
         self._build_widgets()
@@ -204,15 +193,8 @@ class BarBellApp(tk.Tk):
         self.product_listbox.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.product_listbox.bind("<<ListboxSelect>>", self._on_product_selected)
 
-        # A frame, not a Label, so the "entered for this run" line can render
-        # its GTIN digits in bold while the rest of the line stays the plain
-        # label font - ttk.Label can't mix font weights within one string.
-        self.gtin_status_label = ttk.Frame(product_frame)
-        self.gtin_status_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.enter_gtin_button = ttk.Button(
-            product_frame, text="Enter GTIN...", command=self._enter_gtin, state="disabled"
-        )
-        self.enter_gtin_button.grid(row=1, column=1, sticky="e", pady=(8, 0))
+        self.gtin_status_label = ttk.Label(product_frame, text="", wraplength=600, justify="left")
+        self.gtin_status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         pkg_frame = ttk.LabelFrame(self, text="4. Package Details", padding=10)
         pkg_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
@@ -281,30 +263,18 @@ class BarBellApp(tk.Tk):
                 f"{slip.no_package} package(s) per Label Traxx",
             )
 
-    def _set_gtin_status_text(self, text: str):
-        """Plain, single-style status text - every case except the bold-digit one below."""
-        for child in self.gtin_status_label.winfo_children():
-            child.destroy()
-        if text:
-            ttk.Label(self.gtin_status_label, text=text).pack(side="left")
-
-    def _set_gtin_status_with_bold_digits(self, prefix: str, digits: str, suffix: str):
-        """Same line as _set_gtin_status_text, but `digits` renders bold - font
-        family, size, and colour are otherwise identical (see self._bold_font)."""
-        for child in self.gtin_status_label.winfo_children():
-            child.destroy()
-        ttk.Label(self.gtin_status_label, text=prefix).pack(side="left")
-        ttk.Label(self.gtin_status_label, text=digits, font=self._bold_font).pack(side="left")
-        ttk.Label(self.gtin_status_label, text=suffix).pack(side="left")
+    def _set_gtin_status_text(self, text: str, error: bool = False):
+        """error=True renders in red - used for a blocking, invalid-GTIN warning
+        (see _on_product_selected) so it stays visibly distinct even after the
+        matching messagebox is dismissed."""
+        self.gtin_status_label.config(text=text, foreground="red" if error else "")
 
     def _reset_product_selection(self):
         self.product_listbox.delete(0, tk.END)
         self._line_items = []
         self._selected_line_item = None
         self._product = None
-        self._gtin_override = None
         self._set_gtin_status_text("")
-        self.enter_gtin_button.config(state="disabled")
 
     def _on_slip_selected(self, _event):
         selection = self.slip_listbox.curselection()
@@ -334,7 +304,6 @@ class BarBellApp(tk.Tk):
         if not selection:
             return
         self._selected_line_item = self._line_items[selection[0]]
-        self._gtin_override = None
 
         try:
             with ReadOnlyConnection() as conn:
@@ -347,31 +316,21 @@ class BarBellApp(tk.Tk):
         self._product = product
         if product.gtin:
             self._set_gtin_status_text(f"GTIN on file: {product.gtin}")
-            self.enter_gtin_button.config(state="disabled")
-        else:
-            self._set_gtin_status_text(
-                f"No GTIN on file for item {product.item_number} - "
-                "enter one below, or add it in Label Traxx first."
-            )
-            self.enter_gtin_button.config(state="normal")
-
-    def _enter_gtin(self):
-        if self._product is None:
             return
-        raw = simpledialog.askstring(
-            "Enter GTIN", f"GTIN for item {self._product.item_number}:", parent=self
+
+        # Blocking, not dismissible: product.gtin stays None, which
+        # _gather_preview_inputs() refuses to proceed past - dismissing this
+        # popup doesn't lift the block, it just closes the popup.
+        detail = (
+            f"Item {product.item_number} (P/N {product.prod_num}): {product.gtin_error}\n"
+            f'Value found in Label Traxx (Barcode Start): {product.gtin_raw!r}\n\n'
+            "Fix this in Label Traxx, then reselect the product."
         )
-        if raw is None:  # cancelled
-            return
-        try:
-            gtin = normalize_gtin(raw)
-        except InvalidGTINError as exc:
-            messagebox.showerror("Invalid GTIN", str(exc))
-            return
-
-        self._gtin_override = gtin
-        self._set_gtin_status_with_bold_digits(
-            "GTIN entered for this run: ", gtin, " (not saved to Label Traxx)"
+        messagebox.showerror("Invalid GTIN in Label Traxx", detail)
+        self._set_gtin_status_text(
+            f"BLOCKED - item {product.item_number} (P/N {product.prod_num}): "
+            f"{product.gtin_error} Value found: {product.gtin_raw!r}",
+            error=True,
         )
 
     # --- generate --------------------------------------------------------
@@ -390,10 +349,11 @@ class BarBellApp(tk.Tk):
         if self._product is None:
             messagebox.showerror("Incomplete", "Couldn't load product info for this line item.")
             return None
-        if not self._product.gtin and not self._gtin_override:
+        if not self._product.gtin:
             messagebox.showerror(
                 "GTIN required",
-                "Enter a GTIN for this run, or add it in Label Traxx first, before generating labels.",
+                "This item's GTIN is missing or invalid in Label Traxx (Product.BC_Start / "
+                '"Barcode Start") - fix it there before generating labels.',
             )
             return None
 
@@ -417,7 +377,7 @@ class BarBellApp(tk.Tk):
         total_qty = line_item.ship_quantity
         test_mode = self.test_mode_var.get()
 
-        gtin = self._gtin_override or self._product.gtin
+        gtin = self._product.gtin
         batch = build_batch_number(job_number, self._product.prod_num)
         first_package_qty = min(units_per_package, total_qty)
         preview_sscc = (
@@ -547,7 +507,6 @@ class BarBellApp(tk.Tk):
                     units_per_package=units_per_package,
                     labels_per_package=labels_per_package,
                     production_date=production_date,
-                    gtin_override=self._gtin_override,
                     test_mode=test_mode,
                 )
         except Exception as exc:  # noqa: BLE001

@@ -7,10 +7,9 @@ Flow:
   2. Pick a packing slip for that job (all packing slips tied to the job via
      PackingSlip.TicketNum)
   3. A packing slip can carry multiple products - pick ONE (ProductNo + description)
-  4. If that product has no GTIN on file in Label Traxx: either enter one for
-     this run only, or exit so it can be entered into Label Traxx instead
-     (QUESTIONS.md #4 - Label Traxx has no confirmed GTIN column yet, so this
-     will always trigger until that's built out)
+  4. GTIN comes from Product.BC_Start ("Barcode Start") - if it's missing or fails
+     validation (non-numeric, wrong length, bad check digit), this blocks and exits;
+     fix it in Label Traxx and re-run (QUESTIONS.md #4/#12 - no manual override)
   5. Units per package (manual - Label Traxx doesn't record physical packaging)
   6. Logistics labels per package (manual - e.g. 2 for a pallet needing labels
      on both sides, 1 for a carton)
@@ -36,9 +35,7 @@ from dotenv import load_dotenv
 from src.batch import build_batch_number
 from src.db.readonly_connection import ReadOnlyConnection
 from src.gs1 import build_contents_element_string, build_sscc_element_string
-from src.gtin import InvalidGTINError, normalize_gtin
 from src.labels import (
-    ProductInfo,
     assemble_label_rows,
     get_product_info,
     list_packing_slip_line_items,
@@ -117,40 +114,23 @@ def choose_product(conn, packing_slip_number: str):
     return items[choice - 1]
 
 
-def prompt_gtin(item_number: str) -> str:
-    raw = prompt(f"GTIN for item {item_number}: ")
-    try:
-        return normalize_gtin(raw)
-    except InvalidGTINError as exc:
-        print(str(exc))
-        return prompt_gtin(item_number)
-
-
-def resolve_gtin(product: ProductInfo) -> str | None:
+def require_valid_gtin(product):
     """
-    If this product has no GTIN on file in Label Traxx, ask the user to
-    either enter one for this run only, or exit so it can be entered into
-    Label Traxx instead. Returns the GTIN to use (None if the product
-    already had one on file - nothing to override).
+    GTIN comes only from Product.BC_Start - no manual override. A missing or
+    invalid value is a blocking error: print exactly what's wrong (which
+    item, what's wrong, the raw value as found) and exit, rather than
+    letting a run proceed on a bad GTIN.
     """
     if product.gtin:
-        return None
+        return
 
     print(
-        f"\nNo GTIN on file in Label Traxx for item {product.item_number} "
-        f"({product.description})."
+        f"\nBLOCKED - invalid GTIN in Label Traxx for item {product.item_number} "
+        f"(P/N {product.prod_num}): {product.gtin_error}"
     )
-    print("  1. Enter the GTIN now (used for this run only - not saved back to Label Traxx)")
-    print("  2. Exit so it can be entered into Label Traxx first")
-    choice = input("Choice [1/2]: ").strip()
-    while choice not in ("1", "2"):
-        choice = input("Enter 1 or 2: ").strip()
-
-    if choice == "2":
-        print("Exiting - no SSCCs were issued. Enter the GTIN in Label Traxx, then re-run.")
-        sys.exit(0)
-
-    return prompt_gtin(product.item_number)
+    print(f'Value found in Label Traxx (Barcode Start): {product.gtin_raw!r}')
+    print("Fix this in Label Traxx, then re-run. No SSCCs were issued.")
+    sys.exit(1)
 
 
 def print_gs1_preview(gtin, production_date, first_package_qty, batch, sscc):
@@ -222,8 +202,8 @@ def main():
         line_item = choose_product(conn, slip.number)
         product = get_product_info(conn, line_item.product_number)
 
-        gtin_override = resolve_gtin(product)
-        gtin = gtin_override or product.gtin
+        require_valid_gtin(product)
+        gtin = product.gtin
 
         units_per_package = prompt_int("Units per package: ")
         labels_per_package = prompt_int("Logistics labels per package: ")
@@ -273,7 +253,6 @@ def main():
             units_per_package=units_per_package,
             labels_per_package=labels_per_package,
             production_date=production_date,
-            gtin_override=gtin_override,
             test_mode=test_mode,
         )
 
@@ -282,8 +261,6 @@ def main():
     )
     packages_used = len({r.sscc for r in rows})
     print(f"\nWrote {len(rows)} label row(s) covering {packages_used} package(s) to {out_path}")
-    if not all(r.gtin for r in rows):
-        print("GTIN is still blank on every row - fill in once it's available.")
 
 
 if __name__ == "__main__":

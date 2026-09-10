@@ -1,5 +1,8 @@
+import json
+
 import pytest
 
+from src.gtin import InvalidGTINError
 from src.labels import (
     PackingSlipLineItem,
     assemble_label_rows,
@@ -70,7 +73,14 @@ class FakeConn:
         raise AssertionError(f"No fake data registered for query: {sql}")
 
 
-def make_fake_conn(pack_slip_items=None):
+# A real Product.BC_Start value pulled from the live database - a valid
+# UPC-A with GS1 grouping spaces (verified check digit). normalize_gtin()
+# turns this into "00051096184921".
+VALID_BC_START = "0 51096 18492 1"
+VALID_GTIN = "00051096184921"
+
+
+def make_fake_conn(pack_slip_items=None, bc_start=VALID_BC_START):
     return FakeConn(
         {
             "Ticket": (
@@ -83,8 +93,8 @@ def make_fake_conn(pack_slip_items=None):
                 or [("100495", "47388", "233458 - JWN White O/P Rum B 750Ml USA - PS", "213223", 547000)],
             ),
             "Product": (
-                ["ProdNum", "Name4", "Description"],
-                [("47388", "233458", "233458 - JWN White O/P Rum B 750Ml USA - PS")],
+                ["ProdNum", "Name4", "Description", "BC_Start"],
+                [("47388", "233458", "233458 - JWN White O/P Rum B 750Ml USA - PS", bc_start)],
             ),
         }
     )
@@ -142,7 +152,48 @@ def test_get_product_info_uses_name4_as_item_number_and_prodnum_as_product_no():
     assert product.prod_num == "47388"  # ProductNo / "P/N" - feeds the batch
     assert product.item_number == "233458"  # distinct field, does NOT feed the batch
     assert product.description == "233458 - JWN White O/P Rum B 750Ml USA - PS"
-    assert product.gtin is None  # not sourceable yet - see QUESTIONS.md #4
+
+
+def test_get_product_info_sources_gtin_from_bc_start():
+    """GTIN (AI 02) comes from Product.BC_Start ("Barcode Start" in Label
+    Traxx's UI) - confirmed by the user, item 3."""
+    product = get_product_info(make_fake_conn(bc_start=VALID_BC_START), "47388")
+    assert product.gtin == VALID_GTIN
+    assert product.gtin_raw == VALID_BC_START
+    assert product.gtin_error is None
+
+
+def test_get_product_info_flags_empty_bc_start_without_raising():
+    """Empty BC_Start doesn't raise from the lookup itself - gtin_error is
+    set so the caller can block generation with a specific message."""
+    product = get_product_info(make_fake_conn(bc_start=""), "47388")
+    assert product.gtin is None
+    assert product.gtin_raw == ""
+    assert "empty" in product.gtin_error.lower()
+
+
+def test_get_product_info_flags_non_numeric_bc_start():
+    product = get_product_info(make_fake_conn(bc_start="ABC123"), "47388")
+    assert product.gtin is None
+    assert product.gtin_raw == "ABC123"
+    assert "digits" in product.gtin_error.lower()
+
+
+def test_get_product_info_flags_wrong_length_bc_start():
+    """Real Label Traxx example: '0 12061' despaces to '012061' - 6 digits,
+    an incomplete/garbage entry, not a valid GTIN length."""
+    product = get_product_info(make_fake_conn(bc_start="0 12061"), "47388")
+    assert product.gtin is None
+    assert product.gtin_raw == "0 12061"
+    assert "8, 12, 13, or 14" in product.gtin_error
+
+
+def test_get_product_info_flags_bad_check_digit_bc_start():
+    bad = VALID_BC_START[:-1] + str((int(VALID_BC_START[-1]) + 1) % 10)  # corrupt the last digit
+    product = get_product_info(make_fake_conn(bc_start=bad), "47388")
+    assert product.gtin is None
+    assert product.gtin_raw == bad
+    assert "check digit" in product.gtin_error.lower()
 
 
 # --- assemble_label_rows: the full join + SSCC issuance ---------------------
@@ -174,7 +225,7 @@ def test_assemble_label_rows_end_to_end(tmp_path):
     assert first.package_index == 1
     assert first.label_copy_index == 1
     assert first.production_date == "2026-03-23"
-    assert first.gtin is None
+    assert first.gtin == VALID_GTIN  # sourced from Product.BC_Start
 
     # both copies of package 1 share the same SSCC ...
     second = rows[1]
@@ -222,6 +273,30 @@ def test_assemble_label_rows_test_mode_never_touches_the_real_counter(tmp_path):
     test_sccs = {r.sscc for r in rows}
     assert len(test_sccs) == 21  # one per package, all unique
     assert all(s.startswith("TEST-SSCC-") for s in test_sccs)
+
+
+def test_assemble_label_rows_blocks_on_missing_gtin(tmp_path):
+    """
+    Defense in depth: even if a caller forgets to check product.gtin_error
+    first, assemble_label_rows itself must never let a run proceed on a
+    missing/invalid GTIN - the error names the item and shows the raw value.
+    """
+    state_file = tmp_path / "sscc_state.json"
+    gen = SSCCGenerator(CLC_PREFIX, "0", state_file)
+    gen.initialize(start_at=10)
+
+    with pytest.raises(InvalidGTINError, match="233458"):
+        assemble_label_rows(
+            conn=make_fake_conn(bc_start=""),
+            sscc_generator=gen,
+            job_number="122984",
+            line_item=make_line_item(),
+            units_per_package=27000,
+            labels_per_package=1,
+            production_date="2026-03-23",
+        )
+    # the block happens before any SSCC is issued - counter still at its initialized value
+    assert json.loads(state_file.read_text())["last_serial"] == 9
 
 
 def test_assemble_label_rows_requires_a_generator_unless_test_mode():

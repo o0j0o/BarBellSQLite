@@ -46,29 +46,30 @@ resolving it - `Ticket.PressStat` is no longer used anywhere.
 
 </details>
 
-## 4. Where does the GTIN come from? - DECIDED, one thing still needed
+## 4. Where does the GTIN come from? - RESOLVED (2026-09-09, item 3)
 
 Confirmed from the project documents: **JWN owns and provides the GTIN per SKU - CLC must
 never create or register one.** It's one of the six required fields on every label (AI
-02), but it isn't in Label Traxx yet (checked `Product.BC_Symbol`/`BC_HRStart` on the
-sample record - those decode to a different number, so they're CLC's own product
-barcode, not JWN's logistics GTIN).
+02).
 
-**Decided: GTIN goes into Label Traxx** - someone else enters it there through Label
-Traxx's own UI once the CLC/LCJ item-code<->GTIN master list is compiled with JWN;
-BarBell just reads it back out.
+**Resolved: `Product.BC_Start`** ("Barcode Start" in Label Traxx's own UI) is the field -
+confirmed by the user. `Product.BC_Symbol`/`BC_HRStart` (checked earlier) decode to a
+different number, so those are CLC's own product barcode, not this. `get_product_info()`
+in `src/labels.py` reads it through the existing read-only connection wrapper and
+validates it via `src/gtin.py::normalize_gtin()`.
 
-**Still needed: which column it lands in.** `Name1`/`Name2`/`Name3` are all blank on
-every product checked so far - nothing to confirm empirically yet. Re-run `probe_odbc.py`
-against a product that actually has a GTIN entered, once one exists, to confirm the
-column before building the "merge" step around it.
+**No manual override anymore.** The earlier "enter a GTIN for this run" escape hatch
+(built 2026-09-09, before this field was known) is gone - since BC_Start is now the
+authoritative source, a missing/invalid value is a **blocking, non-dismissible error**
+(see item 12) rather than something to work around in BarBell. This also means item 1's
+bold-digit styling (which specifically targeted the "GTIN entered for this run:" line)
+no longer has anything to render - see item 12 for the full explanation.
 
-**Built (2026-09-09): the missing-GTIN prompt.** Until that column exists,
-`generate_labels.py`'s `resolve_gtin()` checks the product for this packing slip and, if
-its GTIN is blank, stops and asks: enter one now (used for this run only, validated
-against the GS1 check digit and normalized to 14 digits via `src/gtin.py`, but NOT saved
-back to Label Traxx) or exit cleanly so it can be entered into Label Traxx first (exits
-before any SSCCs are issued - confirmed the state file is untouched on this path).
+Real BC_Start values pulled from the live database are messy exactly as expected free
+text: some use GS1 grouping spaces (`'0 51096 18492 1'` - a genuinely valid UPC-A),
+others are truncated/garbage (`'0 12061'` -> 6 digits after despacing, not a valid GTIN
+length). `normalize_gtin()` strips whitespace throughout (not just the ends) so the
+grouped ones parse correctly, while still catching the genuinely bad ones.
 
 ## 5. SSCC generation - BUILT
 
@@ -236,3 +237,35 @@ GUI concept; the CLI still only prints the text AI strings).
   "looks like" a barcode.
 - `zxing-cpp`/`numpy` are test-only dependencies (not needed to run the app) - noted as
   such in `requirements.txt`.
+
+## 12. Numbered changes 1-3 (2026-09-10): version tracking, bold GTIN digits, GTIN from BC_Start
+
+Three explicitly-numbered items, done in the order requested (2, then 1, then 3), each a
+separate commit, each bumping `PATCH` per item 2's own versioning rule.
+
+- **Item 2 (0.1.0 Beta, baseline)**: version tracking added - `src/version.py` is the
+  single source of truth (MAJOR/MINOR/PATCH, BETA flag, BUILD_DATE), displayed in the
+  About dialog below "Designed by: Greg Coles" and recorded in `CHANGELOG.md`.
+- **Item 1 (0.1.1)**: the GTIN digits on the "GTIN entered for this run:" line were made
+  bold (prefix/suffix/layout unchanged) - see `barbell_gui.py`'s (now-removed, see below)
+  `_set_gtin_status_with_bold_digits()`. **Note**: no yellow highlight existed anywhere
+  in the code for this line before this change - the spec described preserving one, but
+  there wasn't one to preserve. Flagged, not assumed.
+- **Item 3 (0.1.2)**: GTIN now sourced from `Product.BC_Start` (see item 4 above) with
+  blocking validation (empty/non-numeric/wrong-length/bad-checksum all block, naming the
+  item and showing the raw value found).
+
+**A real conflict between items 1 and 3, resolved by removing the now-dead code**: item
+3's "these are blocking errors, do not let a run proceed on an invalid GTIN" language
+means the manual "Enter GTIN for this run" override no longer exists - GTIN either comes
+validly from Label Traxx, or the run is blocked, full stop. That was the *only* line item
+1's bold-digit styling applied to. Rather than leave permanently-unreachable code in
+place, `_set_gtin_status_with_bold_digits()`, the `enter_gtin_button`, `_enter_gtin()`,
+and the `gtin_override` parameter/tests were all removed as part of item 3's commit.
+`gtin_status_label` reverted to a plain `ttk.Label` (a `foreground="red"` state was added
+instead, for the new blocking-error display - see `_set_gtin_status_text(..., error=True)`).
+
+**This is a judgment call, not something explicitly authorized** - if you actually want
+manual GTIN entry available as a fallback despite the blocking language, say so and it's
+a small addition to restore (the bold-digit code is preserved in git history, in the item
+1 commit, if wanted back verbatim).

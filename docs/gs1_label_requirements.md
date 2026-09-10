@@ -15,7 +15,7 @@ data elements, each with a GS1-128 Application Identifier:
 | AI | Field | Source | Status in BarBell |
 |---|---|---|---|
 | (00) | SSCC (18-digit Serial Shipping Container Code) | **CLC generates it** - never sourced from Label Traxx | `src/sscc.py::SSCCGenerator` (confirmed against CLC's real GS1 Company Prefix) |
-| (02) | GTIN of the trade unit (GTIN-14) | **JWN provides it per SKU** - CLC must not create/register GTINs | **NOT FOUND in Label Traxx** - see "GTIN: the missing piece" below |
+| (02) | GTIN of the trade unit (GTIN-14) | **JWN provides it per SKU** - CLC must not create/register GTINs | `Product.BC_Start` ("Barcode Start"), validated via `src/gtin.py::normalize_gtin()` - see "GTIN" below |
 | (37) | Quantity (trade units on the pallet/carton) | Label Traxx | `TicketItem.OrderQuantity` (confirmed) |
 | (10) | Batch / Lot code | Computed | `Ticket.Number` + `Product.ProdNum` ("ProductNo"/"P/N"), no separator - **matches JWN's own decision**: "proceed using Job # + P/N as the batch number" (Ameika Turner, JWN). Corrected 2026-09-09: originally implemented with the item number (`Product.Name4`) instead of `ProdNum` - the user clarified "P/N" means `ProdNum`. `build_batch_number()` in `src/batch.py` unchanged; the fix was in which field `src/labels.py` passes to it. |
 | (11) | Production date (YYMMDD) | Label Traxx | `Ticket.PressStat` (decided "for now", low confidence - see QUESTIONS.md) |
@@ -25,7 +25,7 @@ Free-format section (plain text, not barcoded): Company name, production plant, 
 number, item description, Best Before Date if applicable - all straightforward from
 `Ticket`/`Product` except Best Before Date (see above).
 
-## GTIN: the missing piece
+## GTIN - RESOLVED (2026-09-10)
 
 Per the briefing: **JWN owns and provides the GTIN. CLC must never create or register
 one.** The wiki doc's JWN review confirms this in practice - Ameika Turner gave CLC an
@@ -33,26 +33,19 @@ exact GTIN value (`0072105000635`) to encode for one specific SKU, and separatel
 CLC to "supply a list of all JWN item codes CLC provides and their corresponding GTINs
 - with LCJ's listed separately."
 
-**I checked whether this Product record already has a GTIN in Label Traxx and it does
-not appear to.** `Product.BC_Symbol` = `'UPC'` and `Product.BC_HRStart` =
-`'7 21059 00063 5'` look at first glance like they might be it, but decoded
-(`721059000635`, a 12-digit UPC-A) they don't match Ameika's GTIN once both are
-normalized to GTIN-14 (`00721059000635` vs `00072105000635` - different numbers). These
-`BC_*` fields are most likely CLC's own barcode setup for the *product* label artwork,
-not the *logistics* GTIN JWN assigns - a different thing per the briefing's own
-GTIN-vs-SSCC distinction.
+**Confirmed source: `Product.BC_Start`** ("Barcode Start" in Label Traxx's own UI) - the
+user confirmed this directly. (Earlier ruled out: `Product.BC_Symbol`/`BC_HRStart` decode
+to a different number than Ameika's GTIN once normalized, so those are CLC's own product
+barcode for the label artwork, not JWN's logistics GTIN - a different thing per the
+briefing's own GTIN-vs-SSCC distinction.)
 
-**Decided (2026-09-09): GTIN goes into Label Traxx.** Someone else enters it there through
-Label Traxx's own UI (not BarBell - `ReadOnlyConnection` only ever reads); BarBell reads it
-back out like every other field.
-
-**Still needed before this can be implemented: which column?** All of Product's
-`Name1`/`Name2`/`Name3` are blank on the sample record (only `Name4` is populated, with
-the item number) - so a GTIN hasn't been entered for any product yet, and there's nothing
-to inspect empirically. Once CLC starts entering GTINs in Label Traxx (as part of
-compiling the item-code<->GTIN master list), re-run `probe_odbc.py` against a
-product that actually has one populated to confirm which column it landed in - don't
-guess it's `Name1`/2/3 just because they're the other empty slots.
+**Read through `ReadOnlyConnection`, like everything else** - `get_product_info()` in
+`src/labels.py`. It's free text, so it's validated via `src/gtin.py::normalize_gtin()`:
+whitespace-stripped throughout (real values use GS1 grouping spaces, e.g.
+`'0 51096 18492 1'`), then checked for digits-only, valid length (8/12/13/14), and a
+correct mod-10 check digit. A missing or invalid value is a **blocking, non-dismissible
+error** - it names the item, the P/N, what's wrong, and the raw value found - not a
+warning that can be worked around in BarBell; see QUESTIONS.md #12.
 
 ## SSCC: the missing piece
 
