@@ -3,6 +3,14 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 0.1.4 Beta - 2026-09-10
+
+- The "No GTIN on file" warning (dialog box, status label, and the CLI
+  equivalent) now names the Product No (P/N) instead of the item number,
+  matching how the operator identifies the product on the packing slip.
+  The `require_valid_gtin()` blocking message was likewise simplified to
+  reference the P/N only.
+
 ## 0.1.3 Beta - 2026-09-10
 
 - Amendment to item 3: manual GTIN entry is available for every run while in

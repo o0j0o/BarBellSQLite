@@ -130,8 +130,8 @@ def require_valid_gtin(product):
         return
 
     print(
-        f"\nBLOCKED - invalid GTIN in Label Traxx for item {product.item_number} "
-        f"(P/N {product.prod_num}): {product.gtin_error}"
+        f"\nBLOCKED - invalid GTIN in Label Traxx for P/N {product.prod_num} "
+        f"({product.description}): {product.gtin_error}"
     )
     print(f'Value found in Label Traxx (Barcode Start): {product.gtin_raw!r}')
     print("Fix this in Label Traxx, then re-run. No SSCCs were issued.")
@@ -161,7 +161,7 @@ def resolve_gtin(product, settings) -> str:
             raw = product.gtin_raw
     else:
         print(
-            f"\nNo GTIN on file in Label Traxx for item {product.item_number} "
+            f"\nNo GTIN on file in Label Traxx for P/N {product.prod_num} "
             f"({product.description})."
         )
         raw = prompt("GTIN: ")

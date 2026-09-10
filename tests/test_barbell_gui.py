@@ -112,7 +112,7 @@ class TestApplyGtinEntryStateForProduct:
         assert app.gtin_entry_var.get() == ""
         assert str(app.gtin_entry.cget("state")) == "normal"
         assert len(warnings) == 1
-        assert "233458" in warnings[0][1]  # names the item
+        assert "47388" in warnings[0][1]  # names the P/N
         assert product.description in warnings[0][1]
         assert "BLOCKED" in app.gtin_status_label.cget("text") or "No GTIN" in app.gtin_status_label.cget("text")
         app.settings.allow_manual_gtin_override = True  # restore

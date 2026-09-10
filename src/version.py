@@ -21,7 +21,7 @@ See CHANGELOG.md for the history behind each bump.
 
 MAJOR = 0
 MINOR = 1
-PATCH = 3
+PATCH = 4
 BETA = True
 
 BUILD_DATE = "2026-09-10"  # date of the most recent change

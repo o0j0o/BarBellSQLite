@@ -356,11 +356,11 @@ class BarBellApp(tk.Tk):
         self.gtin_entry.config(state="normal")
         messagebox.showwarning(
             "No GTIN on file",
-            f"No GTIN on file in Label Traxx for item {product.item_number} "
+            f"No GTIN on file in Label Traxx for P/N {product.prod_num} "
             f"({product.description}).\n\nEnter one below to continue.",
         )
         self._set_gtin_status_text(
-            f"No GTIN on file for item {product.item_number} ({product.description}) - "
+            f"No GTIN on file for P/N {product.prod_num} ({product.description}) - "
             "enter one below.",
             error=True,
         )

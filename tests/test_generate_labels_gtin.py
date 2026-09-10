@@ -35,7 +35,6 @@ def test_require_valid_gtin_blocks_and_exits_when_gtin_missing(capsys):
     assert exc_info.value.code == 1
 
     output = capsys.readouterr().out
-    assert "233458" in output  # names the item
     assert "47388" in output  # names the P/N
     assert "GTIN is empty (no value)" in output  # what's wrong
     assert "''" in output  # the raw value as found
@@ -52,7 +51,7 @@ def test_require_valid_gtin_blocks_and_exits_when_gtin_invalid(capsys):
     assert exc_info.value.code == 1
 
     output = capsys.readouterr().out
-    assert "233458" in output
+    assert "47388" in output
     assert "ABC123" in output
 
 
