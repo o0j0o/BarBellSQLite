@@ -3,6 +3,19 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.1 Beta - 2026-09-14
+
+- Added a local SQLite database (`src/db/local_store.py`, `barbell.db` - gitignored)
+  with a `jobs` table (one row per Job No, upserted per run: packing slip, P/N, item
+  number, batch, production date, customer, GTIN used, package sizing, test-mode flag)
+  and a `labels` table (one row per label actually written to a CSV: auto-increment id,
+  Job No FK, SSCC, carton sequence, label copy index, quantity, status
+  original/void/reprint, nullable superseded_id for reprint history, timestamp).
+  CSV export now sources its rows from a Jobs+Labels join instead of directly from the
+  in-memory generation result - the CSV format on disk is unchanged. Added a
+  "Job/Label History..." screen (next to About) to browse logged jobs/labels, filterable
+  by Job No and/or date. See QUESTIONS.md #14.
+
 ## 1.0.0 Beta - 2026-09-14
 
 - Version reset to mark the start of the SQLite-backed rewrite (Greg's

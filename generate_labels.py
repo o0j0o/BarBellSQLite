@@ -37,6 +37,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.batch import build_batch_number
+from src.db.local_store import record_generation_run
 from src.db.readonly_connection import ReadOnlyConnection
 from src.gs1 import build_contents_element_string, build_sscc_element_string
 from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
@@ -312,8 +313,16 @@ def main():
             test_mode=test_mode,
         )
 
+    flat_rows = record_generation_run(
+        rows,
+        units_per_package=units_per_package,
+        labels_per_package=labels_per_package,
+        test_mode=test_mode,
+        db_path=settings.local_db_file,
+    )
+
     out_path = write_csv(
-        rows, Path(settings.output_dir), job_number, slip.number, test_mode=test_mode
+        flat_rows, Path(settings.output_dir), job_number, slip.number, test_mode=test_mode
     )
     packages_used = len({r.sscc for r in rows})
     print(f"\nWrote {len(rows)} label row(s) covering {packages_used} package(s) to {out_path}")

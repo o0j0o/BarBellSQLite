@@ -194,3 +194,94 @@ def test_about_dialog_shows_version_and_build_date_from_version_module(app):
     assert f"Version: {version_string()}" in texts
     assert f"Build date: {BUILD_DATE}" in texts
     about_window.destroy()
+
+
+def _find_treeview(widget):
+    for child in widget.winfo_children():
+        if child.winfo_class() == "Treeview":
+            return child
+        found = _find_treeview(child)
+        if found is not None:
+            return found
+    return None
+
+
+class TestHistoryViewer:
+    def test_opens_and_lists_rows_from_the_local_db(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import record_generation_run
+        from src.labels import LabelRow
+
+        db_path = tmp_path / "barbell.db"
+        rows = [
+            LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=27000,
+                batch="12298447388", production_date="2026-03-23", sscc="086001571120000001",
+                gtin="00051096184921", package_index=1, label_copy_index=1,
+            )
+        ]
+        record_generation_run(
+            rows, units_per_package=27000, labels_per_package=1, test_mode=False, db_path=db_path
+        )
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+
+        app._show_history()
+        history_window = app.winfo_children()[-1]
+        tree = _find_treeview(history_window)
+
+        assert tree is not None
+        assert len(tree.get_children()) == 1
+        values = tree.item(tree.get_children()[0], "values")
+        assert values[0] == "122984"  # job_number
+        assert values[5] == "086001571120000001"  # sscc
+
+        history_window.destroy()
+
+    def test_job_number_filter_narrows_results(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import record_generation_run
+        from src.labels import LabelRow
+
+        db_path = tmp_path / "barbell.db"
+
+        def make_row(job_number, sscc):
+            return LabelRow(
+                job_number=job_number, packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                sscc=sscc, gtin="00051096184921", package_index=1, label_copy_index=1,
+            )
+
+        record_generation_run(
+            [make_row("111111", "sscc-a")], units_per_package=100, labels_per_package=1,
+            test_mode=False, db_path=db_path,
+        )
+        record_generation_run(
+            [make_row("222222", "sscc-b")], units_per_package=100, labels_per_package=1,
+            test_mode=False, db_path=db_path,
+        )
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+
+        app._show_history()
+        history_window = app.winfo_children()[-1]
+        tree = _find_treeview(history_window)
+        assert len(tree.get_children()) == 2  # no filter yet - both runs shown
+
+        entries = [
+            w for w in history_window.winfo_children()[0].winfo_children()
+            if w.winfo_class() in ("TEntry", "Entry")
+        ]
+        job_filter_entry = entries[0]
+        job_filter_entry.insert(0, "111111")
+
+        search_buttons = [
+            w for w in history_window.winfo_children()[0].winfo_children()[-1].winfo_children()
+            if w.winfo_class() in ("TButton", "Button") and w.cget("text") == "Search / Refresh"
+        ]
+        search_buttons[0].invoke()
+
+        assert len(tree.get_children()) == 1
+        values = tree.item(tree.get_children()[0], "values")
+        assert values[0] == "111111"
+
+        history_window.destroy()

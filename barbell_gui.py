@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
+from src.db.local_store import fetch_label_history, record_generation_run
 from src.db.readonly_connection import ReadOnlyConnection
 from src.gs1 import (
     build_contents_barcode_data,
@@ -239,6 +240,9 @@ class BarBellApp(tk.Tk):
         action_frame.grid(row=5, column=0, sticky="ew")
         ttk.Button(action_frame, text="Preview Barcode", command=self._preview_barcode).pack(side="left")
         ttk.Button(action_frame, text="Generate Labels", command=self._generate).pack(side="left", padx=(8, 0))
+        ttk.Button(action_frame, text="Job/Label History...", command=self._show_history).pack(
+            side="right", padx=(0, 8)
+        )
         ttk.Button(action_frame, text="About", command=self._show_about).pack(side="right")
 
     # --- job / packing slip / GTIN -------------------------------------
@@ -572,7 +576,22 @@ class BarBellApp(tk.Tk):
             messagebox.showerror("Generation failed", str(exc))
             return
 
-        out_path = self._write_csv(rows, job_number, packing_slip_number, test_mode=test_mode)
+        try:
+            flat_rows = record_generation_run(
+                rows,
+                units_per_package=units_per_package,
+                labels_per_package=labels_per_package,
+                test_mode=test_mode,
+                db_path=self.settings.local_db_file,
+            )
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "Database error",
+                f"Labels were generated but could not be logged to the local database:\n{exc}",
+            )
+            return
+
+        out_path = self._write_csv(flat_rows, job_number, packing_slip_number, test_mode=test_mode)
         packages_used = len({r.sscc for r in rows})
         messagebox.showinfo(
             "Labels generated",
@@ -603,6 +622,89 @@ class BarBellApp(tk.Tk):
                     ]
                 )
         return out_path
+
+    # --- job/label history -----------------------------------------------
+
+    def _show_history(self):
+        """
+        Browses BarBell's own local log of everything it has generated
+        (src/db/local_store.py), joined from the Jobs and Labels tables -
+        not Label Traxx. Filter by an exact Job No and/or production date
+        (YYYY-MM-DD); leave either blank to not filter on it.
+        """
+        win = tk.Toplevel(self)
+        win.title("Job/Label History")
+        win.geometry("900x420")
+
+        filter_frame = ttk.Frame(win, padding=10)
+        filter_frame.pack(fill="x")
+
+        ttk.Label(filter_frame, text="Job No:").pack(side="left")
+        job_filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=job_filter_var, width=15).pack(side="left", padx=(4, 12))
+
+        ttk.Label(filter_frame, text="Date (YYYY-MM-DD):").pack(side="left")
+        date_filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=date_filter_var, width=12).pack(side="left", padx=(4, 12))
+
+        columns = (
+            "job_number", "packing_slip", "product_no", "item_number", "batch",
+            "sscc", "carton_seq", "copy", "quantity", "status", "created_at",
+        )
+        headings = {
+            "job_number": "Job No", "packing_slip": "Packing Slip", "product_no": "P/N",
+            "item_number": "Item No", "batch": "Batch", "sscc": "SSCC",
+            "carton_seq": "Carton Seq", "copy": "Copy", "quantity": "Qty",
+            "status": "Status", "created_at": "Logged At",
+        }
+
+        tree_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        tree_frame.pack(fill="both", expand=True)
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        for col in columns:
+            tree.heading(col, text=headings[col])
+            tree.column(col, width=90, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        status_label = ttk.Label(win, text="", padding=(10, 0, 10, 10))
+        status_label.pack(fill="x")
+
+        def refresh():
+            tree.delete(*tree.get_children())
+            try:
+                rows = fetch_label_history(
+                    self.settings.local_db_file,
+                    job_number=job_filter_var.get().strip() or None,
+                    date=date_filter_var.get().strip() or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Lookup failed", str(exc), parent=win)
+                return
+            for r in rows:
+                tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        r.job_number, r.packing_slip_number, r.product_no, r.item_number,
+                        r.batch, r.sscc, r.package_index, r.label_copy_index, r.quantity,
+                        r.status, r.created_at,
+                    ),
+                )
+            status_label.config(text=f"{len(rows)} label row(s)")
+
+        button_frame = ttk.Frame(filter_frame)
+        button_frame.pack(side="left")
+        ttk.Button(button_frame, text="Search / Refresh", command=refresh).pack(side="left")
+        ttk.Button(
+            button_frame,
+            text="Clear filters",
+            command=lambda: (job_filter_var.set(""), date_filter_var.set(""), refresh()),
+        ).pack(side="left", padx=(6, 0))
+
+        refresh()
 
     # --- about / setup ---------------------------------------------------
 

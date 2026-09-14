@@ -316,3 +316,51 @@ manual entry is available for every run while in Beta, not only when BC_Start is
 Label Traxx's GTIN data isn't authoritative yet. Before dropping Beta, decide whether
 `allow_manual_gtin_override` should default to `False` at that point (tightening GTIN
 sourcing back to Label Traxx alone), or stay a deliberate, ongoing choice.
+
+Note: the version was reset to 1.0.0 Beta (2026-09-14, Greg's instruction, see
+`src/version.py`) without this item being revisited - BETA is still True, so this is
+still open. Flagging so it isn't lost in the version reset.
+
+## 14. Local SQLite database (Jobs + Labels) - BUILT (2026-09-14, v1.0.1 Beta)
+
+BarBell now keeps its own local record of every job and label it generates -
+`src/db/local_store.py`, `Settings.local_db_file` (default `barbell.db`, gitignored,
+same treatment as `sscc_state.json`/`gtin_audit_log.jsonl`). Separate from Label Traxx,
+which stays entirely read-only.
+
+- **`jobs` table** - one row per Job No (primary key), upserted on every generation run
+  against that job number: packing slip number, P/N, item number, item description,
+  batch, production date, customer number/name, the GTIN actually used, units/labels
+  per package, test-mode flag, who ran it (`getpass.getuser()`) and when.
+- **`labels` table** - one row per individual label row actually written to a CSV:
+  auto-increment `id` as the primary key (deliberately NOT the SSCC or batch, since an
+  SSCC can legitimately repeat if a label is corrected/reprinted), `job_number` (FK to
+  `jobs`), SSCC, carton sequence (which physical package), label copy index, quantity,
+  `status` (`original`/`void`/`reprint`), `superseded_id` (nullable FK back to the
+  `labels` row a reprint replaces), timestamp.
+- **CSV export** now sources its rows from a SQL join of `jobs` + `labels`
+  (`record_generation_run()` writes both tables in one transaction, then re-reads
+  exactly what it wrote back through the join) instead of directly from the in-memory
+  rows `assemble_label_rows()` returns. `write_csv()`/`BarBellApp._write_csv()`
+  themselves are unchanged - the joined rows reuse `LabelRow`'s field names, so the CSV
+  format on disk is identical to before.
+- **GUI**: "Job/Label History..." button next to About, opens a browsable table
+  (Treeview) of everything logged, filterable by exact Job No and/or production date.
+
+**Known limitations, both by design given the schema Greg specified - flagging rather
+than silently deviating:**
+- **Job No as a strict primary key on `jobs`** assumes one product per job number in
+  practice. If the same job number is ever re-run for a *different* packing
+  slip/product (the app does support a packing slip carrying multiple products - see
+  item 9 - so this isn't impossible), the `jobs` row is overwritten with the newest
+  run's data, and a join-based CSV re-export or history browse of *older* `labels`
+  rows under that job number would then show the newer product's batch/description.
+  Nothing is lost - every `labels` row is still there, `job_number` and all - but the
+  `jobs`-sourced columns for old rows would reflect the latest run, not the run that
+  actually produced them. Worth a second look if that scenario turns out to be
+  real usage rather than the edge case it's assumed to be.
+- **Void/reprint is schema-only for now.** Every row `record_generation_run()` writes
+  is `status='original'` with `superseded_id` left `NULL` - there's no GUI action yet
+  to actually mark a label void or record a reprint against a prior row. The columns
+  are in place so that feature can be added without a schema change; building the
+  action itself is a separate task.

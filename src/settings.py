@@ -36,6 +36,10 @@ class Settings:
     # Append-only audit trail (JSON Lines) of every GTIN sourcing decision -
     # see src/audit.py.
     audit_log_file: str = "gtin_audit_log.jsonl"
+    # Local SQLite database (Jobs + Labels tables) - BarBell's own record of
+    # every job and label it has generated, separate from Label Traxx. See
+    # src/db/local_store.py.
+    local_db_file: str = "barbell.db"
 
 
 def load_settings(path: Path | str = DEFAULT_SETTINGS_FILE) -> Settings:
