@@ -3,6 +3,14 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.0 Beta - 2026-09-14
+
+- Version reset to mark the start of the SQLite-backed rewrite (Greg's
+  instruction). No functional change in this commit - the pre-reset history
+  (0.1.0-0.1.4 Beta) is preserved in git and tagged `BarBellSQLite`, and a
+  full folder snapshot was saved to `BarBell_v1_backup` before this point.
+  New GitHub repo: https://github.com/o0j0o/BarBellSQLite.
+
 ## 0.1.4 Beta - 2026-09-10
 
 - The "No GTIN on file" warning (dialog box, status label, and the CLI
