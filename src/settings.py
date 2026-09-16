@@ -40,6 +40,16 @@ class Settings:
     # every job and label it has generated, separate from Label Traxx. See
     # src/db/local_store.py.
     local_db_file: str = "barbell.db"
+    # Demo Mode: runs entirely on local, self-contained sample data (see
+    # src/demo_data.py) with no Label Traxx/ODBC or network calls at all -
+    # for demoing BarBell somewhere with no access to those. Toggled via the
+    # "Run as Demo" checkbox in setup_gui.py. While on, generated/logged data
+    # is kept in demo_db_file/demo_audit_log_file (never the real ones) and
+    # CSVs are prefixed "DEMO_". Not hot-reloaded into an already-running
+    # BarBell - like every other setting here, it takes effect on next start.
+    demo_mode: bool = False
+    demo_db_file: str = "barbell_demo.db"
+    demo_audit_log_file: str = "demo_gtin_audit_log.jsonl"
 
 
 def load_settings(path: Path | str = DEFAULT_SETTINGS_FILE) -> Settings:

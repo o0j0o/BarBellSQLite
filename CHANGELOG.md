@@ -3,6 +3,25 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.2 Beta - 2026-09-16
+
+- Added Demo Mode (`Settings.demo_mode`, "Run as Demo" checkbox in `setup_gui.py`) -
+  runs BarBell entirely on local, self-contained sample data (`src/demo_data.py`: a
+  handful of obviously-fake DEMO- jobs/packing slips/products, including a
+  multi-product packing slip and a product with no GTIN on file) with zero Label
+  Traxx/ODBC or network calls, for demoing the app somewhere with no access to
+  either. `DemoConnection` is a drop-in stand-in for `ReadOnlyConnection` - none of
+  `src/labels.py`'s business logic changed. While on: SSCCs are always the existing
+  fake `TEST-SSCC-#####` placeholders (never the real counter), CSVs are prefixed
+  `DEMO_`, and the Jobs/Labels DB + GTIN audit log are written to separate
+  `demo_*` files - real data is never touched. The main window shows an unmissable
+  red "DEMO MODE" banner and title-bar tag whenever it's on, and the Test Mode
+  checkbox is forced on and locked. `generate_labels.py` (the CLI) supports it too.
+  See QUESTIONS.md #15. Also fixes a pre-existing bug in `setup_gui.py`'s Save:
+  it was rebuilding `Settings` from only the fields shown in that dialog, silently
+  resetting every other setting (password, audit log path, DB path, etc.) to its
+  default on every save.
+
 ## 1.0.1 Beta - 2026-09-14
 
 - Added a local SQLite database (`src/db/local_store.py`, `barbell.db` - gitignored)

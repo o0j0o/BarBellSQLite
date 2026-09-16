@@ -285,3 +285,87 @@ class TestHistoryViewer:
         assert values[0] == "111111"
 
         history_window.destroy()
+
+
+class TestDemoMode:
+    """Demo Mode is read once at startup (self.settings), same as every
+    other setting - _apply_demo_mode_ui() is the pure widget-update half of
+    that, factored out so it's directly testable without restarting the app
+    for each case. Every test restores demo_mode=False at the end since
+    `app` is a module-scoped, shared Tk root."""
+
+    def test_turning_demo_mode_on_shows_banner_and_locks_test_mode_on(self, app):
+        app.settings.demo_mode = True
+        try:
+            app._apply_demo_mode_ui()
+
+            assert app.title() == "BarBell - DEMO MODE"
+            assert app.demo_banner.grid_info() != {}  # visible
+            assert app.test_mode_var.get() is True
+            assert str(app.test_mode_checkbox.cget("state")) == "disabled"
+            assert "DEMO-1001" in app.demo_hint_label.cget("text")
+        finally:
+            app.settings.demo_mode = False
+            app._apply_demo_mode_ui()
+
+    def test_turning_demo_mode_off_hides_banner_and_unlocks_test_mode(self, app):
+        app.settings.demo_mode = True
+        app._apply_demo_mode_ui()
+
+        app.settings.demo_mode = False
+        app._apply_demo_mode_ui()
+
+        assert app.title() == "BarBell"
+        assert app.demo_banner.grid_info() == {}  # hidden
+        assert str(app.test_mode_checkbox.cget("state")) == "normal"
+        assert app.demo_hint_label.cget("text") == ""
+
+    def test_connect_returns_demo_connection_when_demo_mode_is_on(self, app):
+        from src.demo_data import DemoConnection
+
+        app.settings.demo_mode = True
+        try:
+            assert isinstance(app._connect(), DemoConnection)
+        finally:
+            app.settings.demo_mode = False
+
+    def test_connect_returns_real_connection_when_demo_mode_is_off(self, app):
+        from src.db.readonly_connection import ReadOnlyConnection
+
+        app.settings.demo_mode = False
+        assert isinstance(app._connect(), ReadOnlyConnection)
+
+    def test_write_csv_prefixes_demo_filename_and_keeps_test_suffix(self, app, tmp_path, monkeypatch):
+        from src.labels import LabelRow
+
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path))
+        rows = [
+            LabelRow(
+                job_number="DEMO-1001", packing_slip_number="DEMO-PS-5001", customer_number="DEMO-C01",
+                customer_name="Acme (DEMO)", product_no="DEMO-P100", item_number="D-100",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-09-16",
+                sscc="TEST-SSCC-00001", gtin="00099999000016", package_index=1, label_copy_index=1,
+            )
+        ]
+
+        out_path = app._write_csv(rows, "DEMO-1001", "DEMO-PS-5001", test_mode=True, demo_mode=True)
+
+        assert out_path.name == "DEMO_labels_DEMO-1001_DEMO-PS-5001_TEST.csv"
+        assert out_path.exists()
+
+    def test_write_csv_has_no_demo_prefix_when_demo_mode_is_false(self, app, tmp_path, monkeypatch):
+        from src.labels import LabelRow
+
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path))
+        rows = [
+            LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                sscc="086001571120000001", gtin="00051096184921", package_index=1, label_copy_index=1,
+            )
+        ]
+
+        out_path = app._write_csv(rows, "122984", "100495", test_mode=False, demo_mode=False)
+
+        assert out_path.name == "labels_122984_100495.csv"

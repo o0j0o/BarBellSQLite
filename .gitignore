@@ -4,6 +4,8 @@ sscc_state.json
 sscc_state.archived-*.json
 gtin_audit_log.jsonl
 barbell.db
+barbell_demo.db
+demo_gtin_audit_log.jsonl
 output/
 __pycache__/
 *.pyc

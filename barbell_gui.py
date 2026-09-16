@@ -27,6 +27,7 @@ from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
 from src.db.local_store import fetch_label_history, record_generation_run
 from src.db.readonly_connection import ReadOnlyConnection
+from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import (
     build_contents_barcode_data,
     build_contents_element_string,
@@ -118,8 +119,37 @@ class BarBellApp(tk.Tk):
 
         self._load_logos()
         self._build_widgets()
+        self._apply_demo_mode_ui()
 
     # --- setup ---------------------------------------------------------
+
+    def _connect(self):
+        """The one place that decides real Label Traxx vs. Demo Mode - every
+        DB lookup in this app goes through this instead of instantiating
+        ReadOnlyConnection/DemoConnection directly."""
+        if self.settings.demo_mode:
+            return DemoConnection()
+        return ReadOnlyConnection()
+
+    def _apply_demo_mode_ui(self):
+        """Demo Mode is read once at startup (self.settings, like every other
+        setting) - toggling it in Setup takes effect the next time BarBell is
+        started, not live. When on: an unmistakable banner + title-bar tag,
+        a hint listing the available demo job numbers, and Test mode is
+        forced on and locked - Demo Mode must never issue a real SSCC."""
+        if self.settings.demo_mode:
+            self.title("BarBell - DEMO MODE")
+            self.demo_banner.grid()
+            self.demo_hint_label.config(
+                text=f"Demo Mode - try job numbers: {', '.join(DEMO_JOB_NUMBERS)}"
+            )
+            self.test_mode_var.set(True)
+            self.test_mode_checkbox.config(state="disabled")
+        else:
+            self.title("BarBell")
+            self.demo_banner.grid_remove()
+            self.demo_hint_label.config(text="")
+            self.test_mode_checkbox.config(state="normal")
 
     def _load_logos(self):
         # Taskbar icon stays the square icon-only mark, not the wordmark.
@@ -153,8 +183,22 @@ class BarBellApp(tk.Tk):
         self._about_clc_logo = load_scaled_or_none(CLC_LOGO_PATH, ABOUT_CLC_TARGET_PX)
 
     def _build_widgets(self):
+        # Demo Mode banner - always created, shown/hidden by _apply_demo_mode_ui()
+        # so tests and later toggles have a stable widget to check, rather than
+        # conditionally building it only when demo_mode happens to be on.
+        self.demo_banner = tk.Label(
+            self,
+            text="DEMO MODE - sample data only, not connected to Label Traxx",
+            bg="#c0392b",
+            fg="white",
+            font=("", 11, "bold"),
+            pady=6,
+        )
+        self.demo_banner.grid(row=0, column=0, sticky="ew")
+        self.demo_banner.grid_remove()  # hidden unless/until _apply_demo_mode_ui() shows it
+
         header = ttk.Frame(self, padding=10)
-        header.grid(row=0, column=0, sticky="ew")
+        header.grid(row=1, column=0, sticky="ew")
         # Two equal-weight spacer columns either side of column 1 keep the
         # BarBell logo centered regardless of the header's actual width.
         header.columnconfigure(0, weight=1)
@@ -173,7 +217,7 @@ class BarBellApp(tk.Tk):
             ttk.Label(header, image=self._header_clc_logo).place(relx=1.0, rely=0.5, anchor="e")
 
         job_frame = ttk.LabelFrame(self, text="1. Job", padding=10)
-        job_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        job_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         ttk.Label(job_frame, text="Job number:").grid(row=0, column=0, sticky="w")
         self.job_number_var = tk.StringVar()
         ttk.Entry(job_frame, textvariable=self.job_number_var, width=20).grid(
@@ -182,15 +226,17 @@ class BarBellApp(tk.Tk):
         ttk.Button(job_frame, text="Find Packing Slips", command=self._load_packing_slips).grid(
             row=0, column=2
         )
+        self.demo_hint_label = ttk.Label(job_frame, text="", foreground="#c0392b", font=("", 8))
+        self.demo_hint_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         slip_frame = ttk.LabelFrame(self, text="2. Packing Slip", padding=10)
-        slip_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        slip_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         self.slip_listbox = tk.Listbox(slip_frame, width=90, height=6, exportselection=False)
         self.slip_listbox.grid(row=0, column=0, sticky="ew")
         self.slip_listbox.bind("<<ListboxSelect>>", self._on_slip_selected)
 
         product_frame = ttk.LabelFrame(self, text="3. Product (a packing slip can carry more than one)", padding=10)
-        product_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        product_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
         self.product_listbox = tk.Listbox(product_frame, width=90, height=4, exportselection=False)
         self.product_listbox.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.product_listbox.bind("<<ListboxSelect>>", self._on_product_selected)
@@ -209,7 +255,7 @@ class BarBellApp(tk.Tk):
         ).grid(row=3, column=0, columnspan=2, sticky="w")
 
         pkg_frame = ttk.LabelFrame(self, text="4. Package Details", padding=10)
-        pkg_frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
+        pkg_frame.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
 
         ttk.Label(pkg_frame, text="Units per package:").grid(row=0, column=0, sticky="w")
         self.units_per_package_var = tk.StringVar()
@@ -230,14 +276,15 @@ class BarBellApp(tk.Tk):
         )
 
         self.test_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        self.test_mode_checkbox = ttk.Checkbutton(
             pkg_frame,
             text="Test mode (fake SSCCs - doesn't touch the real counter)",
             variable=self.test_mode_var,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        )
+        self.test_mode_checkbox.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         action_frame = ttk.Frame(self, padding=10)
-        action_frame.grid(row=5, column=0, sticky="ew")
+        action_frame.grid(row=6, column=0, sticky="ew")
         ttk.Button(action_frame, text="Preview Barcode", command=self._preview_barcode).pack(side="left")
         ttk.Button(action_frame, text="Generate Labels", command=self._generate).pack(side="left", padx=(8, 0))
         ttk.Button(action_frame, text="Job/Label History...", command=self._show_history).pack(
@@ -259,7 +306,7 @@ class BarBellApp(tk.Tk):
         self._selected_slip = None
 
         try:
-            with ReadOnlyConnection() as conn:
+            with self._connect() as conn:
                 slips = list_packing_slips_for_job(conn, job_number)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
             messagebox.showerror("Lookup failed", str(exc))
@@ -301,7 +348,7 @@ class BarBellApp(tk.Tk):
         self._reset_product_selection()
 
         try:
-            with ReadOnlyConnection() as conn:
+            with self._connect() as conn:
                 items = list_packing_slip_line_items(conn, self._selected_slip.number)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Lookup failed", str(exc))
@@ -323,7 +370,7 @@ class BarBellApp(tk.Tk):
         self._selected_line_item = self._line_items[selection[0]]
 
         try:
-            with ReadOnlyConnection() as conn:
+            with self._connect() as conn:
                 product = get_product_info(conn, self._selected_line_item.product_number)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Lookup failed", str(exc))
@@ -559,7 +606,7 @@ class BarBellApp(tk.Tk):
             return
 
         try:
-            with ReadOnlyConnection() as conn:
+            with self._connect() as conn:
                 rows = assemble_label_rows(
                     conn=conn,
                     sscc_generator=gen,
@@ -569,7 +616,11 @@ class BarBellApp(tk.Tk):
                     labels_per_package=labels_per_package,
                     production_date=production_date,
                     gtin_override=info["gtin"],
-                    audit_log_file=self.settings.audit_log_file,
+                    audit_log_file=(
+                        self.settings.demo_audit_log_file
+                        if self.settings.demo_mode
+                        else self.settings.audit_log_file
+                    ),
                     test_mode=test_mode,
                 )
         except Exception as exc:  # noqa: BLE001
@@ -582,7 +633,9 @@ class BarBellApp(tk.Tk):
                 units_per_package=units_per_package,
                 labels_per_package=labels_per_package,
                 test_mode=test_mode,
-                db_path=self.settings.local_db_file,
+                db_path=(
+                    self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
@@ -591,20 +644,23 @@ class BarBellApp(tk.Tk):
             )
             return
 
-        out_path = self._write_csv(flat_rows, job_number, packing_slip_number, test_mode=test_mode)
+        out_path = self._write_csv(
+            flat_rows, job_number, packing_slip_number, test_mode=test_mode, demo_mode=self.settings.demo_mode
+        )
         packages_used = len({r.sscc for r in rows})
         messagebox.showinfo(
             "Labels generated",
             f"Wrote {len(rows)} label row(s) covering {packages_used} package(s) to:\n{out_path}",
         )
 
-    def _write_csv(self, rows, job_number, packing_slip_number, test_mode=False) -> Path:
+    def _write_csv(self, rows, job_number, packing_slip_number, test_mode=False, demo_mode=False) -> Path:
         import csv
 
         output_dir = Path(self.settings.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        prefix = "DEMO_" if demo_mode else ""
         suffix = "_TEST" if test_mode else ""
-        out_path = output_dir / f"labels_{job_number}_{packing_slip_number}{suffix}.csv"
+        out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
         fieldnames = [
             "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
             "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
@@ -676,7 +732,7 @@ class BarBellApp(tk.Tk):
             tree.delete(*tree.get_children())
             try:
                 rows = fetch_label_history(
-                    self.settings.local_db_file,
+                    self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file,
                     job_number=job_filter_var.get().strip() or None,
                     date=date_filter_var.get().strip() or None,
                 )

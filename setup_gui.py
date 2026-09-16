@@ -17,10 +17,11 @@ Run with:
 """
 
 import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from src.settings import Settings, load_settings, save_settings
+from src.settings import load_settings, save_settings
 from src.sscc import (
     SSCCGenerator,
     archive_and_reset_state_file,
@@ -57,6 +58,7 @@ class SetupGUI(tk.Tk):
         self._build_output_section()
         self._build_gs1_section()
         self._build_counter_section()
+        self._build_demo_section()
         self._build_buttons()
 
         self._refresh_counter_status()
@@ -124,9 +126,29 @@ class SetupGUI(tk.Tk):
         )
         self.reset_button.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+    def _build_demo_section(self):
+        frame = ttk.LabelFrame(self, text="Demo Mode", padding=10)
+        frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+
+        self.demo_mode_var = tk.BooleanVar(value=self.settings.demo_mode)
+        ttk.Checkbutton(frame, text="Run as Demo", variable=self.demo_mode_var).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "Runs entirely on self-contained sample data - no Label Traxx/ODBC or\n"
+                "other network calls at all. Safe to use with no network access. Demo\n"
+                "runs are logged to a separate database and CSVs are prefixed \"DEMO_\",\n"
+                "so they never mix with real data. The main window shows an unmistakable\n"
+                "DEMO MODE banner whenever this is on. Takes effect the next time BarBell\n"
+                "is started."
+            ),
+            justify="left",
+            font=("", 8),
+        ).pack(anchor="w", pady=(4, 0))
+
     def _build_buttons(self):
         frame = ttk.Frame(self, padding=10)
-        frame.grid(row=3, column=0, sticky="ew")
+        frame.grid(row=4, column=0, sticky="ew")
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------
@@ -254,13 +276,20 @@ class SetupGUI(tk.Tk):
             messagebox.showerror("Invalid setting", "SSCC counter file location is required.")
             return
 
-        settings = Settings(
+        # Preserve every other field (setup_password, allow_manual_gtin_override,
+        # audit_log_file, local_db_file, etc.) - this dialog only edits the ones
+        # built above, and building a fresh Settings() here would silently reset
+        # everything else to its dataclass default.
+        settings = replace(
+            self.settings,
             output_dir=output_dir,
             gs1_company_prefix=prefix,
             sscc_extension_digit=extension_digit,
             sscc_state_file=state_file,
+            demo_mode=self.demo_mode_var.get(),
         )
         save_settings(settings)
+        self.settings = settings
         messagebox.showinfo("Saved", "Settings saved.")
 
 

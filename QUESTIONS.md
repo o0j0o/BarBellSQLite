@@ -364,3 +364,58 @@ than silently deviating:**
   to actually mark a label void or record a reprint against a prior row. The columns
   are in place so that feature can be added without a schema change; building the
   action itself is a separate task.
+
+## 15. Demo Mode - BUILT (2026-09-16, v1.0.2 Beta)
+
+`Settings.demo_mode` (default `False`), toggled via the "Run as Demo" checkbox in
+`setup_gui.py`. Runs the whole job -> packing slip -> product -> GTIN -> package ->
+CSV flow with zero Label Traxx/ODBC or other network calls - for demoing BarBell
+somewhere with no access to either.
+
+- **`src/demo_data.py`**: `DemoConnection`, a drop-in stand-in for
+  `ReadOnlyConnection` with the same `execute(sql) -> cursor` shape. It answers the
+  simple single-table `SELECT <cols> FROM <table> [WHERE <col> = '<value>']` queries
+  `src/labels.py` issues by parsing just enough of the SQL text to route to a
+  canned in-memory table and filter/narrow columns - `src/labels.py` itself needed
+  **no changes at all**. A handful of obviously-fake `DEMO-` jobs/packing
+  slips/products, including a multi-product packing slip (`DEMO-PS-5002`, like real
+  slips can be - item 9) and one product with no `BC_Start` on file (`DEMO-P300`),
+  so demo mode can also show the "No GTIN on file"/manual-entry flow, not just the
+  happy path. **If a future query shape isn't a single table + at most one `WHERE
+  col = 'value'` clause (a join, multiple conditions, etc.), `DemoConnection` will
+  need extending** - it doesn't attempt to parse general SQL.
+- **SSCCs**: Demo Mode always uses the existing `build_test_sscc()` fake
+  `TEST-SSCC-#####` placeholders (`src/sscc.py`) - never the real counter. The
+  main window's Test Mode checkbox is forced on and disabled while
+  Demo Mode is on, so there's a single source of truth for "are real SSCCs being
+  issued" and it can never be turned off by accident.
+  Enabled `settings.demo_mode` skips the startup GS1 Company Prefix check
+  (`generate_labels.py`/`barbell_gui.py`) too - a traveling laptop may not even
+  have Setup fully configured, and demo mode never needs a real prefix.
+- **Separate data, never mixed with real data**: `Settings.demo_db_file`
+  (`barbell_demo.db`) and `demo_audit_log_file` (`demo_gtin_audit_log.jsonl`), both
+  gitignored - same treatment as the real `local_db_file`/`audit_log_file`. Not
+  exposed in `setup_gui.py`'s UI (editable via `settings.json` only), same
+  precedent as `setup_password`/`audit_log_file` (item 13).
+  Generated CSVs are prefixed `DEMO_` (on top of the existing `_TEST` suffix, which
+  still applies since Demo Mode forces Test Mode) - deliberately more marking than
+  strictly needed, not less, given a demo CSV must never be mistaken for a real one.
+- **Visible indicator**: a red "DEMO MODE" banner across the top of the main
+  window, and the window title becomes "BarBell - DEMO MODE", whenever
+  `settings.demo_mode` is on. A hint under the Job No field lists the available
+  demo job numbers (`DEMO-1001`, `DEMO-1002`, `DEMO-1003`), since there's no live
+  Label Traxx to look them up in.
+- **Not hot-reloaded**: like every other setting BarBell reads once at startup,
+  toggling "Run as Demo" in Setup takes effect the next time BarBell is started,
+  not in the already-running window. Turning it off and restarting returns BarBell
+  fully to normal operation (real `ReadOnlyConnection`, real `local_db_file`, real
+  CSV naming) - nothing demo-related persists into a real run.
+- **CLI parity**: `generate_labels.py` supports Demo Mode identically (its own
+  `connect(settings)` helper mirroring `BarBellApp._connect()`), including the
+  demo-job-number hint and skipping the real-SSCC confirmation prompt.
+- **Fixed in passing**: `setup_gui.py`'s `_save()` was rebuilding `Settings` from
+  only the four fields that dialog edits, silently resetting every other field
+  (`setup_password`, `allow_manual_gtin_override`, `audit_log_file`,
+  `local_db_file`) to its dataclass default on every single save - discovered while
+  adding `demo_mode` there, since it needed to survive a save cycle too. Now uses
+  `dataclasses.replace(self.settings, ...)` so only the edited fields change.

@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 from src.batch import build_batch_number
 from src.db.local_store import record_generation_run
 from src.db.readonly_connection import ReadOnlyConnection
+from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import build_contents_element_string, build_sscc_element_string
 from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
 from src.labels import (
@@ -49,6 +50,14 @@ from src.labels import (
 )
 from src.settings import load_settings
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
+
+
+def connect(settings):
+    """The one place that decides real Label Traxx vs. Demo Mode - see
+    barbell_gui.py's BarBellApp._connect() for the GUI equivalent."""
+    if settings.demo_mode:
+        return DemoConnection()
+    return ReadOnlyConnection()
 
 
 def prompt(text: str) -> str:
@@ -196,11 +205,17 @@ def print_gs1_preview(gtin, production_date, first_package_qty, batch, sscc):
 
 
 def write_csv(
-    rows, output_dir: Path, job_number: str, packing_slip_number: str, test_mode: bool = False
+    rows,
+    output_dir: Path,
+    job_number: str,
+    packing_slip_number: str,
+    test_mode: bool = False,
+    demo_mode: bool = False,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = "DEMO_" if demo_mode else ""
     suffix = "_TEST" if test_mode else ""
-    out_path = output_dir / f"labels_{job_number}_{packing_slip_number}{suffix}.csv"
+    out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
     fieldnames = [
         "JobNumber",
         "PackingSlipNumber",
@@ -245,15 +260,25 @@ def write_csv(
 def main():
     load_dotenv()
     settings = load_settings()
-    if not settings.gs1_company_prefix:
+
+    if settings.demo_mode:
+        print(
+            "\n*** DEMO MODE - running entirely on local sample data, not connected "
+            "to Label Traxx. No real SSCCs will be issued. ***"
+        )
+        print(f"Demo job numbers available: {', '.join(DEMO_JOB_NUMBERS)}")
+    elif not settings.gs1_company_prefix:
         print("GS1 Company Prefix isn't set yet - run setup_gui.py first.")
         sys.exit(1)
 
-    test_mode = input("Test mode - no real SSCCs will be issued? [y/N]: ").strip().lower() == "y"
+    if settings.demo_mode:
+        test_mode = True  # Demo Mode must never issue a real SSCC
+    else:
+        test_mode = input("Test mode - no real SSCCs will be issued? [y/N]: ").strip().lower() == "y"
 
     job_number = prompt("Job number: ")
 
-    with ReadOnlyConnection() as conn:
+    with connect(settings) as conn:
         slip = choose_packing_slip(conn, job_number)
         line_item = choose_product(conn, slip.number)
         product = get_product_info(conn, line_item.product_number)
@@ -309,7 +334,7 @@ def main():
             labels_per_package=labels_per_package,
             production_date=production_date,
             gtin_override=gtin,
-            audit_log_file=settings.audit_log_file,
+            audit_log_file=settings.demo_audit_log_file if settings.demo_mode else settings.audit_log_file,
             test_mode=test_mode,
         )
 
@@ -318,11 +343,16 @@ def main():
         units_per_package=units_per_package,
         labels_per_package=labels_per_package,
         test_mode=test_mode,
-        db_path=settings.local_db_file,
+        db_path=settings.demo_db_file if settings.demo_mode else settings.local_db_file,
     )
 
     out_path = write_csv(
-        flat_rows, Path(settings.output_dir), job_number, slip.number, test_mode=test_mode
+        flat_rows,
+        Path(settings.output_dir),
+        job_number,
+        slip.number,
+        test_mode=test_mode,
+        demo_mode=settings.demo_mode,
     )
     packages_used = len({r.sscc for r in rows})
     print(f"\nWrote {len(rows)} label row(s) covering {packages_used} package(s) to {out_path}")
