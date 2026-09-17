@@ -419,3 +419,59 @@ somewhere with no access to either.
   `local_db_file`) to its dataclass default on every single save - discovered while
   adding `demo_mode` there, since it needed to survive a save cycle too. Now uses
   `dataclasses.replace(self.settings, ...)` so only the edited fields change.
+
+## 16. Job/Label History: select + reprint to CSV - BUILT (2026-09-16, v1.0.3 Beta)
+
+Turns items 14/15's schema (`status`/`superseded_id`, previously write-only from
+`record_generation_run()`) into an actual GUI action: select rows in the history
+viewer and export them again as a reprint.
+
+- **Checkbox column**: `barbell_gui.py`'s `_show_history()` Treeview doesn't
+  support native checkboxes, so the leftmost column ("sel") shows a ☑/☐ glyph
+  and is toggled by clicking that cell (`tree.bind("<Button-1>", ...)`,
+  `identify_column`/`identify_row`). Each row's Treeview `iid` is
+  `str(label.id)` - convenient and exact, no separate id-lookup table needed.
+  The header cell uses the Treeview's own `heading(..., command=...)` as a
+  select-all toggle.
+- **Select-all is filter-scoped by construction**: it only iterates
+  `tree.get_children()` (whatever's currently displayed), never re-queries the
+  database - so a Job No/date filter naturally limits what "select all" means,
+  with no separate "filtered vs. total" bookkeeping needed.
+- **Selections are cleared at the top of `refresh()`** (both the checked-id set
+  and the header glyph) - runs on every Search/Refresh and Clear Filters, so a
+  stale selection from a previous filter can never carry into a new one.
+- **`create_reprint_rows()`** (`src/db/local_store.py`): for each selected
+  `labels.id`, inserts a new row copying that label's
+  job_number/sscc/carton_sequence/label_copy_index/quantity, with
+  `status='reprint'` and `superseded_id` = the original's id. The original row
+  is only ever read, never updated or deleted. Returns the new rows flattened
+  via the existing Jobs+Labels join, in the same order the ids were given.
+- **CSV**: reprint rows are written with the new shared `write_flat_csv()`/
+  `CSV_FIELDNAMES` (`src/db/local_store.py`) - the same column list/order as
+  every other BarBell CSV. `generate_labels.write_csv()` and
+  `BarBellApp._write_csv()` were refactored to delegate to it too, so there's
+  one definition of the flat format instead of three copies of the same
+  14-column list. Filename is `reprint_<YYYYMMDD_HHMMSS>.csv` (`DEMO_` prefixed
+  in Demo Mode) - a reprint selection can span multiple jobs/packing slips, so
+  there's no single job/packing-slip pair to name the file after the way a
+  normal generation run's CSV is named.
+  **Known gap**: a reprint's CSV filename isn't itself logged anywhere (unlike
+  a normal run, there's no Jobs-table analog for "this reprint batch") - if
+  that traceability turns out to matter, it'd need its own small table or a
+  note appended to each reprint row.
+- **Confirmation before writing**: "Export N selected label(s) to CSV?",
+  naming that this creates new reprint log entries. Clicking Export with
+  nothing checked shows an information dialog instead ("Check one or more rows
+  first") and does nothing - no confirmation prompt, no CSV, no DB write.
+  Rather than tracking down each Treeview's actual on-screen column pixel
+  offsets, the confirmation/results dialogs pass `parent=win` so they're
+  attached to the history window specifically, not the main app window.
+- **After export**, the same `refresh()` that clears selections also re-runs
+  the current filter - so a newly created reprint row appears immediately if
+  it matches, without a second manual search.
+- Manually verified end-to-end against a copy of the real demo database
+  (`barbell_demo.db`, copied first so the verification never touched the
+  user's actual demo history): filtered to a job, confirmed select-all picked
+  up exactly the filtered subset (not the other job's rows), individually
+  selected two specific rows, exported, and confirmed both the CSV content and
+  the two new `reprint` rows' `superseded_id`s matched the selection exactly.

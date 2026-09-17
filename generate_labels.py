@@ -29,7 +29,6 @@ Run with:
     python generate_labels.py
 """
 
-import csv
 import datetime
 import sys
 from pathlib import Path
@@ -37,7 +36,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.batch import build_batch_number
-from src.db.local_store import record_generation_run
+from src.db.local_store import record_generation_run, write_flat_csv
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import build_contents_element_string, build_sscc_element_string
@@ -212,49 +211,10 @@ def write_csv(
     test_mode: bool = False,
     demo_mode: bool = False,
 ) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
     prefix = "DEMO_" if demo_mode else ""
     suffix = "_TEST" if test_mode else ""
     out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
-    fieldnames = [
-        "JobNumber",
-        "PackingSlipNumber",
-        "CustomerNumber",
-        "CustomerName",
-        "ProductNo",
-        "ItemNumber",
-        "ItemDescription",
-        "Quantity",
-        "Batch",
-        "ProductionDate",
-        "SSCC",
-        "GTIN",
-        "PackageIndex",
-        "LabelCopyIndex",
-    ]
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(fieldnames)
-        for r in rows:
-            writer.writerow(
-                [
-                    r.job_number,
-                    r.packing_slip_number,
-                    r.customer_number,
-                    r.customer_name,
-                    r.product_no,
-                    r.item_number,
-                    r.item_description,
-                    r.quantity,
-                    r.batch,
-                    r.production_date,
-                    r.sscc,
-                    r.gtin or "",
-                    r.package_index,
-                    r.label_copy_index,
-                ]
-            )
-    return out_path
+    return write_flat_csv(rows, out_path)
 
 
 def main():

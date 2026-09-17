@@ -225,6 +225,7 @@ class TestHistoryViewer:
             rows, units_per_package=27000, labels_per_package=1, test_mode=False, db_path=db_path
         )
         monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)  # read local_db_file, not demo_db_file
 
         app._show_history()
         history_window = app.winfo_children()[-1]
@@ -233,8 +234,9 @@ class TestHistoryViewer:
         assert tree is not None
         assert len(tree.get_children()) == 1
         values = tree.item(tree.get_children()[0], "values")
-        assert values[0] == "122984"  # job_number
-        assert values[5] == "086001571120000001"  # sscc
+        assert values[0] == "☐"  # unchecked checkbox, nothing selected yet
+        assert values[1] == "122984"  # job_number
+        assert values[6] == "086001571120000001"  # sscc
 
         history_window.destroy()
 
@@ -261,6 +263,7 @@ class TestHistoryViewer:
             test_mode=False, db_path=db_path,
         )
         monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)  # read local_db_file, not demo_db_file
 
         app._show_history()
         history_window = app.winfo_children()[-1]
@@ -282,7 +285,7 @@ class TestHistoryViewer:
 
         assert len(tree.get_children()) == 1
         values = tree.item(tree.get_children()[0], "values")
-        assert values[0] == "111111"
+        assert values[1] == "111111"  # job_number (index 0 is the checkbox column)
 
         history_window.destroy()
 
@@ -369,3 +372,224 @@ class TestDemoMode:
         out_path = app._write_csv(rows, "122984", "100495", test_mode=False, demo_mode=False)
 
         assert out_path.name == "labels_122984_100495.csv"
+
+
+CHECKED, UNCHECKED = "☑", "☐"
+
+
+def _click_checkbox_cell(tree, iid):
+    """Simulates the user clicking a row's checkbox cell - bbox() needs a
+    real geometry pass first, hence win.update() (not just update_idletasks())
+    in every test that uses this."""
+    bbox = tree.bbox(iid, "#1")
+    assert bbox, f"row {iid!r} isn't rendered/visible - call win.update() first"
+    x, y = bbox[0] + bbox[2] // 2, bbox[1] + bbox[3] // 2
+    tree.event_generate("<Button-1>", x=x, y=y)
+
+
+def _click_select_all_heading(tree):
+    """The heading's command= callback is registered as a Tcl command -
+    invoking it directly is more reliable than clicking header pixels."""
+    tree.tk.call(tree.heading("sel", "command"))
+
+
+class TestHistoryReprintSelection:
+    def _seed_two_jobs(self, db_path):
+        from src.db.local_store import record_generation_run
+        from src.labels import LabelRow
+
+        def make_row(job_number, sscc):
+            return LabelRow(
+                job_number=job_number, packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                sscc=sscc, gtin="00051096184921", package_index=1, label_copy_index=1,
+            )
+
+        record_generation_run(
+            [make_row("111111", "sscc-a"), make_row("111111", "sscc-b")],
+            units_per_package=100, labels_per_package=1, test_mode=False, db_path=db_path,
+        )
+        record_generation_run(
+            [make_row("222222", "sscc-c")],
+            units_per_package=100, labels_per_package=1, test_mode=False, db_path=db_path,
+        )
+
+    def test_clicking_a_row_checkbox_toggles_only_that_row(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_two_jobs(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+        children = tree.get_children()  # 3 rows, newest first
+
+        _click_checkbox_cell(tree, children[0])
+        win.update()
+
+        assert tree.item(children[0], "values")[0] == CHECKED
+        assert tree.item(children[1], "values")[0] == UNCHECKED
+        assert tree.item(children[2], "values")[0] == UNCHECKED
+
+        # clicking it again unchecks it
+        _click_checkbox_cell(tree, children[0])
+        win.update()
+        assert tree.item(children[0], "values")[0] == UNCHECKED
+
+        win.destroy()
+
+    def test_select_all_applies_only_to_currently_filtered_rows(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_two_jobs(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+
+        # Filter down to job 111111 (2 rows) before selecting all.
+        entries = [
+            w for w in win.winfo_children()[0].winfo_children()
+            if w.winfo_class() in ("TEntry", "Entry")
+        ]
+        entries[0].insert(0, "111111")
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        search_button = [
+            b for b in button_frame.winfo_children()
+            if b.winfo_class() in ("TButton", "Button") and b.cget("text") == "Search / Refresh"
+        ][0]
+        search_button.invoke()
+        win.update()
+
+        filtered_children = tree.get_children()
+        assert len(filtered_children) == 2  # only job 111111's rows
+
+        _click_select_all_heading(tree)
+        win.update()
+
+        assert tree.heading("sel", "text") == CHECKED
+        assert all(tree.item(iid, "values")[0] == CHECKED for iid in filtered_children)
+
+        # clicking select-all again deselects everything
+        _click_select_all_heading(tree)
+        win.update()
+        assert tree.heading("sel", "text") == UNCHECKED
+        assert all(tree.item(iid, "values")[0] == UNCHECKED for iid in filtered_children)
+
+        win.destroy()
+
+    def test_new_search_clears_stale_selections(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_two_jobs(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+
+        _click_select_all_heading(tree)
+        win.update()
+        assert tree.heading("sel", "text") == CHECKED
+
+        # Running Search/Refresh again (even with the same filter) must clear it.
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        search_button = [
+            b for b in button_frame.winfo_children()
+            if b.winfo_class() in ("TButton", "Button") and b.cget("text") == "Search / Refresh"
+        ][0]
+        search_button.invoke()
+        win.update()
+
+        assert tree.heading("sel", "text") == UNCHECKED
+        assert all(tree.item(iid, "values")[0] == UNCHECKED for iid in tree.get_children())
+
+        win.destroy()
+
+    def test_export_selected_writes_csv_and_logs_reprint_rows(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import fetch_label_history
+
+        db_path = tmp_path / "barbell.db"
+        self._seed_two_jobs(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "output"))
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+
+        before = fetch_label_history(db_path)
+        original_ids = sorted(r.id for r in before)
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+        children = tree.get_children()  # 3 rows total
+
+        _click_checkbox_cell(tree, children[0])
+        _click_checkbox_cell(tree, children[1])
+        win.update()
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        export_button = [
+            b for b in button_frame.winfo_children()
+            if b.winfo_class() in ("TButton", "Button") and "Reprint" in b.cget("text")
+        ][0]
+        export_button.invoke()
+        win.update()
+
+        after = fetch_label_history(db_path)
+        assert len(after) == len(before) + 2  # two new reprint rows, nothing removed
+
+        reprints = [r for r in after if r.status == "reprint"]
+        assert len(reprints) == 2
+        assert {r.superseded_id for r in reprints} == {int(children[0]), int(children[1])}
+
+        # originals must still be there, unchanged
+        for original_id in original_ids:
+            assert any(r.id == original_id and r.status == "original" for r in after)
+
+        csv_files = list((tmp_path / "output").glob("reprint_*.csv"))
+        assert len(csv_files) == 1
+        with open(csv_files[0], newline="", encoding="utf-8") as f:
+            content = f.read()
+        assert content.count("\n") == 3  # header + 2 rows (+ trailing newline)
+
+        win.destroy()
+
+    def test_export_selected_does_nothing_when_none_checked(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_two_jobs(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "output"))
+
+        info_calls = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: info_calls.append(a))
+        confirm_calls = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.askyesno", lambda *a, **k: confirm_calls.append(a) or True
+        )
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        export_button = [
+            b for b in button_frame.winfo_children()
+            if b.winfo_class() in ("TButton", "Button") and "Reprint" in b.cget("text")
+        ][0]
+        export_button.invoke()
+
+        assert len(info_calls) == 1  # "nothing selected" message
+        assert len(confirm_calls) == 0  # never got as far as asking to confirm
+        assert not (tmp_path / "output").exists()
+
+        win.destroy()

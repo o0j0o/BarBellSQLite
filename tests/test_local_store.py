@@ -1,7 +1,9 @@
 import csv
 
+import pytest
+
 from generate_labels import write_csv
-from src.db.local_store import fetch_label_history, record_generation_run
+from src.db.local_store import create_reprint_rows, fetch_label_history, record_generation_run
 from src.labels import LabelRow
 
 
@@ -159,3 +161,104 @@ def test_flat_rows_feed_write_csv_unchanged_and_match_expected_columns(tmp_path)
     assert first_data_row[0] == "122984"  # JobNumber
     assert first_data_row[4] == "47388"  # ProductNo
     assert first_data_row[7] == "27000"  # Quantity
+
+
+# --- create_reprint_rows: reprint/void design (QUESTIONS.md #16) -----------
+
+def test_create_reprint_rows_copies_original_data_and_links_superseded_id(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    original_rows = record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    original = original_rows[0]
+
+    reprints = create_reprint_rows([original.id], db_path=db_path)
+
+    assert len(reprints) == 1
+    reprint = reprints[0]
+    assert reprint.status == "reprint"
+    assert reprint.superseded_id == original.id
+    assert reprint.id != original.id
+    # same physical carton data as the original - job_number, sscc, carton
+    # sequence, copy index, quantity are all unchanged
+    assert reprint.job_number == original.job_number
+    assert reprint.sscc == original.sscc
+    assert reprint.package_index == original.package_index
+    assert reprint.label_copy_index == original.label_copy_index
+    assert reprint.quantity == original.quantity
+    # job-level fields (from the Jobs join) carry through too
+    assert reprint.batch == original.batch
+    assert reprint.gtin == original.gtin
+
+
+def test_create_reprint_rows_does_not_alter_or_delete_the_original(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    original_rows = record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    original = original_rows[0]
+
+    create_reprint_rows([original.id], db_path=db_path)
+
+    still_there = [r for r in fetch_label_history(db_path) if r.id == original.id]
+    assert len(still_there) == 1
+    assert still_there[0].status == "original"
+    assert still_there[0].superseded_id is None
+
+
+def test_create_reprint_rows_handles_multiple_ids_in_given_order(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    originals = record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    ids = [originals[0].id, originals[2].id, originals[1].id]  # deliberately out of order
+
+    reprints = create_reprint_rows(ids, db_path=db_path)
+
+    assert len(reprints) == 3
+    assert [r.superseded_id for r in reprints] == ids  # same order as requested
+    assert all(r.status == "reprint" for r in reprints)
+
+
+def test_create_reprint_rows_appends_to_history_total_count(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    originals = record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    create_reprint_rows([originals[0].id, originals[1].id], db_path=db_path)
+
+    all_rows = fetch_label_history(db_path, job_number="122984")
+    assert len(all_rows) == 6  # 4 original + 2 reprints, nothing lost
+
+
+def test_create_reprint_rows_rejects_empty_list(tmp_path):
+    with pytest.raises(ValueError, match="empty"):
+        create_reprint_rows([], db_path=tmp_path / "barbell.db")
+
+
+def test_create_reprint_rows_rejects_unknown_id(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    with pytest.raises(ValueError, match="99999"):
+        create_reprint_rows([99999], db_path=db_path)
+
+
+def test_reprint_rows_feed_write_csv_in_the_same_flat_format(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    originals = record_generation_run(
+        make_rows(), units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
+    )
+    reprints = create_reprint_rows([originals[0].id], db_path=db_path)
+
+    out_path = write_csv(reprints, tmp_path / "output", "reprint", "batch", test_mode=False)
+    with open(out_path, newline="", encoding="utf-8") as f:
+        reader = list(csv.reader(f))
+
+    assert reader[0] == [
+        "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
+        "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
+        "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
+    ]
+    assert reader[1][10] == originals[0].sscc  # SSCC column unchanged from the original

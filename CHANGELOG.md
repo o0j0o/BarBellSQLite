@@ -3,6 +3,22 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.3 Beta - 2026-09-16
+
+- Job/Label History screen now supports selecting rows and reprinting them to CSV.
+  A checkbox column (leftmost) lets you check individual rows; the header
+  checkbox selects/deselects all *currently filtered/visible* rows only. A new
+  "Reprint Selected (Export to CSV)" button confirms the count, writes the
+  selected rows to a `reprint_<timestamp>.csv` (`DEMO_` prefixed in Demo Mode)
+  using the same Jobs+Labels join/flatten as normal CSV export, and logs one new
+  `labels` row per selection with `status='reprint'` and `superseded_id` pointing
+  back at the original - the original row is never changed or deleted. Running a
+  new search/filter clears all checkboxes (including select-all) so a stale
+  selection can't carry over. `src/db/local_store.py` gained
+  `create_reprint_rows()` and a shared `write_flat_csv()`/`CSV_FIELDNAMES` that
+  `generate_labels.write_csv()` and `BarBellApp._write_csv()` now both delegate to,
+  so the flat CSV format is defined in exactly one place. See QUESTIONS.md #16.
+
 ## 1.0.2 Beta - 2026-09-16
 
 - Added Demo Mode (`Settings.demo_mode`, "Run as Demo" checkbox in `setup_gui.py`) -

@@ -25,7 +25,12 @@ from dotenv import load_dotenv
 
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
-from src.db.local_store import fetch_label_history, record_generation_run
+from src.db.local_store import (
+    create_reprint_rows,
+    fetch_label_history,
+    record_generation_run,
+    write_flat_csv,
+)
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import (
@@ -654,30 +659,11 @@ class BarBellApp(tk.Tk):
         )
 
     def _write_csv(self, rows, job_number, packing_slip_number, test_mode=False, demo_mode=False) -> Path:
-        import csv
-
         output_dir = Path(self.settings.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
         prefix = "DEMO_" if demo_mode else ""
         suffix = "_TEST" if test_mode else ""
         out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
-        fieldnames = [
-            "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
-            "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
-            "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
-        ]
-        with open(out_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(fieldnames)
-            for r in rows:
-                writer.writerow(
-                    [
-                        r.job_number, r.packing_slip_number, r.customer_number, r.customer_name,
-                        r.product_no, r.item_number, r.item_description, r.quantity, r.batch,
-                        r.production_date, r.sscc, r.gtin or "", r.package_index, r.label_copy_index,
-                    ]
-                )
-        return out_path
+        return write_flat_csv(rows, out_path)
 
     # --- job/label history -----------------------------------------------
 
@@ -690,7 +676,10 @@ class BarBellApp(tk.Tk):
         """
         win = tk.Toplevel(self)
         win.title("Job/Label History")
-        win.geometry("900x420")
+        win.geometry("960x460")
+
+        CHECKED, UNCHECKED = "☑", "☐"  # ☑ / ☐
+        checked_ids: set[str] = set()  # tree iids (== str(label id)) currently checked
 
         filter_frame = ttk.Frame(win, padding=10)
         filter_frame.pack(fill="x")
@@ -704,7 +693,7 @@ class BarBellApp(tk.Tk):
         ttk.Entry(filter_frame, textvariable=date_filter_var, width=12).pack(side="left", padx=(4, 12))
 
         columns = (
-            "job_number", "packing_slip", "product_no", "item_number", "batch",
+            "sel", "job_number", "packing_slip", "product_no", "item_number", "batch",
             "sscc", "carton_seq", "copy", "quantity", "status", "created_at",
         )
         headings = {
@@ -717,7 +706,11 @@ class BarBellApp(tk.Tk):
         tree_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
         tree_frame.pack(fill="both", expand=True)
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        tree.heading("sel", text=UNCHECKED, command=lambda: toggle_select_all())
+        tree.column("sel", width=30, anchor="center", stretch=False)
         for col in columns:
+            if col == "sel":
+                continue
             tree.heading(col, text=headings[col])
             tree.column(col, width=90, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
@@ -728,7 +721,51 @@ class BarBellApp(tk.Tk):
         status_label = ttk.Label(win, text="", padding=(10, 0, 10, 10))
         status_label.pack(fill="x")
 
+        def row_checkbox_symbol(iid: str) -> str:
+            return CHECKED if iid in checked_ids else UNCHECKED
+
+        def redraw_row_checkbox(iid: str):
+            values = list(tree.item(iid, "values"))
+            values[0] = row_checkbox_symbol(iid)
+            tree.item(iid, values=values)
+
+        def sync_select_all_heading():
+            visible = tree.get_children()
+            all_checked = bool(visible) and all(iid in checked_ids for iid in visible)
+            tree.heading("sel", text=CHECKED if all_checked else UNCHECKED)
+
+        def toggle_select_all():
+            visible = tree.get_children()
+            all_checked = bool(visible) and all(iid in checked_ids for iid in visible)
+            new_state = not all_checked  # selecting from none/some -> all; from all -> none
+            for iid in visible:
+                if new_state:
+                    checked_ids.add(iid)
+                else:
+                    checked_ids.discard(iid)
+                redraw_row_checkbox(iid)
+            sync_select_all_heading()
+
+        def on_tree_click(event):
+            if tree.identify_region(event.x, event.y) != "cell":
+                return
+            if tree.identify_column(event.x) != "#1":  # the "sel" column
+                return
+            iid = tree.identify_row(event.y)
+            if not iid:
+                return
+            if iid in checked_ids:
+                checked_ids.discard(iid)
+            else:
+                checked_ids.add(iid)
+            redraw_row_checkbox(iid)
+            sync_select_all_heading()
+
+        tree.bind("<Button-1>", on_tree_click)
+
         def refresh():
+            checked_ids.clear()  # a new search/filter clears stale selections
+            tree.heading("sel", text=UNCHECKED)
             tree.delete(*tree.get_children())
             try:
                 rows = fetch_label_history(
@@ -743,13 +780,52 @@ class BarBellApp(tk.Tk):
                 tree.insert(
                     "",
                     tk.END,
+                    iid=str(r.id),
                     values=(
-                        r.job_number, r.packing_slip_number, r.product_no, r.item_number,
+                        UNCHECKED, r.job_number, r.packing_slip_number, r.product_no, r.item_number,
                         r.batch, r.sscc, r.package_index, r.label_copy_index, r.quantity,
                         r.status, r.created_at,
                     ),
                 )
             status_label.config(text=f"{len(rows)} label row(s)")
+
+        def export_selected():
+            selected_ids = [int(iid) for iid in tree.get_children() if iid in checked_ids]
+            if not selected_ids:
+                messagebox.showinfo(
+                    "Nothing selected", "Check one or more rows first.", parent=win
+                )
+                return
+
+            confirmed = messagebox.askyesno(
+                "Confirm reprint export",
+                f"Export {len(selected_ids)} selected label(s) to CSV?\n\n"
+                "Each one will be logged as a new 'reprint' row in the database, "
+                "linked back to the original - the original rows are kept, not changed.",
+                parent=win,
+            )
+            if not confirmed:
+                return
+
+            demo = self.settings.demo_mode
+            db_path = self.settings.demo_db_file if demo else self.settings.local_db_file
+            try:
+                reprint_rows = create_reprint_rows(selected_ids, db_path=db_path)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                prefix = "DEMO_" if demo else ""
+                out_path = write_flat_csv(
+                    reprint_rows, Path(self.settings.output_dir) / f"{prefix}reprint_{timestamp}.csv"
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Reprint failed", str(exc), parent=win)
+                return
+
+            messagebox.showinfo(
+                "Reprint exported",
+                f"Wrote {len(reprint_rows)} label row(s) to:\n{out_path}",
+                parent=win,
+            )
+            refresh()  # show the newly created reprint rows if they match the current filter
 
         button_frame = ttk.Frame(filter_frame)
         button_frame.pack(side="left")
@@ -759,6 +835,9 @@ class BarBellApp(tk.Tk):
             text="Clear filters",
             command=lambda: (job_filter_var.set(""), date_filter_var.set(""), refresh()),
         ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            button_frame, text="Reprint Selected (Export to CSV)", command=export_selected
+        ).pack(side="left", padx=(12, 0))
 
         refresh()
 

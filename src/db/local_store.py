@@ -28,8 +28,15 @@ what's actually logged, and the GUI history viewer is reading the same data
 a BarTender run would have used. FlatLabelRow deliberately reuses
 src.labels.LabelRow's field names for the CSV-shaped fields, so
 write_csv()/BarBellApp._write_csv() work unchanged on either type.
+
+Reprints (create_reprint_rows()): selecting rows in the GUI history viewer
+and exporting them again appends a NEW 'reprint' Labels row per selection -
+same job_number/sscc/carton_sequence/label_copy_index/quantity as the
+original, superseded_id pointing back at it - and never touches the
+original row. See QUESTIONS.md #16.
 """
 
+import csv
 import getpass
 import sqlite3
 from dataclasses import dataclass
@@ -40,6 +47,15 @@ STATUS_ORIGINAL = "original"
 STATUS_VOID = "void"
 STATUS_REPRINT = "reprint"
 VALID_STATUSES = (STATUS_ORIGINAL, STATUS_VOID, STATUS_REPRINT)
+
+# The one flat CSV column list every BarBell CSV writer uses (BarTender's
+# expected format) - shared so record-generation and reprint-export CSVs
+# can never drift apart.
+CSV_FIELDNAMES = [
+    "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
+    "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
+    "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
+]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -258,5 +274,73 @@ def fetch_label_history(
         query += " ORDER BY l.id DESC"
         cur = conn.execute(query, params)
         return [_row_to_flat(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def write_flat_csv(rows, out_path: Path | str) -> Path:
+    """Writes `rows` (LabelRow- or FlatLabelRow-shaped - anything with the
+    14 CSV_FIELDNAMES-matching attributes) to out_path in BarTender's flat
+    format. The one place that format is written, so record-generation and
+    reprint-export CSVs can never drift apart."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_FIELDNAMES)
+        for r in rows:
+            writer.writerow(
+                [
+                    r.job_number, r.packing_slip_number, r.customer_number, r.customer_name,
+                    r.product_no, r.item_number, r.item_description, r.quantity, r.batch,
+                    r.production_date, r.sscc, r.gtin or "", r.package_index, r.label_copy_index,
+                ]
+            )
+    return out_path
+
+
+def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatLabelRow]:
+    """
+    For each given labels.id, appends a NEW 'reprint' row copying that
+    label's job_number/sscc/carton_sequence/label_copy_index/quantity -
+    the original row is never modified or deleted. Returns the newly
+    created rows, flattened via the same Jobs+Labels join used everywhere
+    else, in the same order label_ids was given (so index 0 of the result
+    is the reprint of label_ids[0], etc).
+    """
+    if not label_ids:
+        raise ValueError("label_ids is empty - nothing to reprint")
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    try:
+        new_ids = []
+        for original_id in label_ids:
+            cur = conn.execute(
+                "SELECT job_number, sscc, carton_sequence, label_copy_index, quantity "
+                "FROM labels WHERE id = ?",
+                (original_id,),
+            )
+            original = cur.fetchone()
+            if original is None:
+                raise ValueError(f"No labels row found for id {original_id!r} - nothing to reprint")
+            job_number, sscc, carton_sequence, label_copy_index, quantity = original
+
+            cur = conn.execute(
+                """
+                INSERT INTO labels (
+                    job_number, sscc, carton_sequence, label_copy_index,
+                    quantity, status, superseded_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'reprint', ?, ?)
+                """,
+                (job_number, sscc, carton_sequence, label_copy_index, quantity, original_id, now),
+            )
+            new_ids.append(cur.lastrowid)
+        conn.commit()
+
+        placeholders = ",".join("?" * len(new_ids))
+        cur = conn.execute(f"{_JOIN_SELECT} WHERE l.id IN ({placeholders})", new_ids)
+        rows_by_id = {row[14]: _row_to_flat(row) for row in cur.fetchall()}  # column 14 is l.id
+        return [rows_by_id[new_id] for new_id in new_ids]
     finally:
         conn.close()
