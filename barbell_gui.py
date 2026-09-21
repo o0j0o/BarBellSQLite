@@ -676,7 +676,8 @@ class BarBellApp(tk.Tk):
         """
         win = tk.Toplevel(self)
         win.title("Job/Label History")
-        win.geometry("960x460")
+        win.geometry("1000x520")
+        win.minsize(600, 300)
 
         CHECKED, UNCHECKED = "☑", "☐"  # ☑ / ☐
         checked_ids: set[str] = set()  # tree iids (== str(label id)) currently checked
@@ -686,11 +687,19 @@ class BarBellApp(tk.Tk):
 
         ttk.Label(filter_frame, text="Job No:").pack(side="left")
         job_filter_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=job_filter_var, width=15).pack(side="left", padx=(4, 12))
+        ttk.Entry(filter_frame, textvariable=job_filter_var, width=12).pack(side="left", padx=(4, 12))
 
         ttk.Label(filter_frame, text="Date (YYYY-MM-DD):").pack(side="left")
         date_filter_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=date_filter_var, width=12).pack(side="left", padx=(4, 12))
+        ttk.Entry(filter_frame, textvariable=date_filter_var, width=11).pack(side="left", padx=(4, 12))
+
+        # Live substring search against the full SSCC - any fragment (GS1
+        # prefix, sequence number, or a piece spanning both) matches, so the
+        # full number including the company prefix is never required. Filters
+        # as you type; see the trace_add() below.
+        ttk.Label(filter_frame, text="SSCC contains:").pack(side="left")
+        sscc_filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=sscc_filter_var, width=22).pack(side="left", padx=(4, 12))
 
         columns = (
             "sel", "job_number", "packing_slip", "product_no", "item_number", "batch",
@@ -703,23 +712,42 @@ class BarBellApp(tk.Tk):
             "status": "Status", "created_at": "Logged At",
         }
 
-        tree_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
-        tree_frame.pack(fill="both", expand=True)
+        # Packed before the grid frame so the row-count line always keeps its
+        # space at the bottom, however the grid resizes.
+        status_label = ttk.Label(win, text="", padding=(10, 0, 10, 10))
+        status_label.pack(side="bottom", fill="x")
+
+        # grid(), not pack(): with pack the scrollbar was placed after a tree
+        # wider than the window and got pushed off-screen. Here the tree takes
+        # all the flexible space and the scrollbars sit in their own row/column.
+        tree_frame = ttk.Frame(win, padding=(10, 0, 10, 0))
+        tree_frame.pack(side="top", fill="both", expand=True)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
         tree.heading("sel", text=UNCHECKED, command=lambda: toggle_select_all())
         tree.column("sel", width=30, anchor="center", stretch=False)
+        # stretch=False everywhere: columns keep their set widths instead of
+        # shrinking to fit, so a window narrower than the table gets a working
+        # horizontal scrollbar rather than squashed/clipped columns.
+        column_widths = {
+            "job_number": 80, "packing_slip": 95, "product_no": 80, "item_number": 80,
+            "batch": 120, "sscc": 170, "carton_seq": 85, "copy": 50, "quantity": 65,
+            "status": 75, "created_at": 210,
+        }
         for col in columns:
             if col == "sel":
                 continue
             tree.heading(col, text=headings[col])
-            tree.column(col, width=90, anchor="w")
-        tree.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-        scrollbar.pack(side="right", fill="y")
-        tree.configure(yscrollcommand=scrollbar.set)
+            tree.column(col, width=column_widths[col], anchor="w", stretch=False)
 
-        status_label = ttk.Label(win, text="", padding=(10, 0, 10, 10))
-        status_label.pack(fill="x")
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
 
         def row_checkbox_symbol(iid: str) -> str:
             return CHECKED if iid in checked_ids else UNCHECKED
@@ -772,6 +800,7 @@ class BarBellApp(tk.Tk):
                     self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file,
                     job_number=job_filter_var.get().strip() or None,
                     date=date_filter_var.get().strip() or None,
+                    sscc_contains=sscc_filter_var.get().strip() or None,
                 )
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Lookup failed", str(exc), parent=win)
@@ -833,13 +862,19 @@ class BarBellApp(tk.Tk):
         ttk.Button(
             button_frame,
             text="Clear filters",
-            command=lambda: (job_filter_var.set(""), date_filter_var.set(""), refresh()),
+            command=lambda: (
+                job_filter_var.set(""), date_filter_var.set(""), sscc_filter_var.set(""), refresh()
+            ),
         ).pack(side="left", padx=(6, 0))
         ttk.Button(
             button_frame, text="Reprint Selected (Export to CSV)", command=export_selected
         ).pack(side="left", padx=(12, 0))
 
         refresh()
+        # Registered after the initial refresh() so setting up the window
+        # doesn't fire it. Every keystroke in the SSCC box re-filters (which,
+        # like any new search, clears checkboxes - see refresh()).
+        sscc_filter_var.trace_add("write", lambda *_: refresh())
 
     # --- about / setup ---------------------------------------------------
 

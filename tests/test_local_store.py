@@ -262,3 +262,73 @@ def test_reprint_rows_feed_write_csv_in_the_same_flat_format(tmp_path):
         "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
     ]
     assert reader[1][10] == originals[0].sscc  # SSCC column unchanged from the original
+
+
+# --- fetch_label_history: SSCC substring search ------------------------------
+
+def _seed_ssccs(db_path, ssccs):
+    rows = []
+    for i, sscc in enumerate(ssccs, start=1):
+        rows.append(
+            LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                sscc=sscc, gtin="00051096184921", package_index=i, label_copy_index=1,
+            )
+        )
+    record_generation_run(
+        rows, units_per_package=100, labels_per_package=1, test_mode=False, db_path=db_path
+    )
+
+
+REAL_SSCCS = ["008600157112000000108", "008600157112000000115", "008600157112000001234"]
+
+
+def test_sscc_search_matches_full_number(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    result = fetch_label_history(db_path, sscc_contains="008600157112000000115")
+    assert [r.sscc for r in result] == ["008600157112000000115"]
+
+
+def test_sscc_search_matches_company_prefix_fragment_anywhere(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    assert len(fetch_label_history(db_path, sscc_contains="86001571")) == 3
+
+
+def test_sscc_search_matches_sequence_only_fragment(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    result = fetch_label_history(db_path, sscc_contains="1234")
+    assert [r.sscc for r in result] == ["008600157112000001234"]
+
+
+def test_sscc_search_matches_fragment_spanning_prefix_and_sequence(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    # "7112" (end of the GS1 prefix) + "0000001" (start of the sequence)
+    result = fetch_label_history(db_path, sscc_contains="71120000001")
+    assert {r.sscc for r in result} == {"008600157112000000108", "008600157112000000115"}
+
+
+def test_sscc_search_is_case_insensitive(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, ["TEST-SSCC-00001", "TEST-SSCC-00002"])
+    assert len(fetch_label_history(db_path, sscc_contains="test-sscc-00001")) == 1
+    assert len(fetch_label_history(db_path, sscc_contains="SsCc")) == 2
+
+
+def test_sscc_search_treats_like_wildcards_literally(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    assert fetch_label_history(db_path, sscc_contains="%") == []
+    assert fetch_label_history(db_path, sscc_contains="_") == []
+
+
+def test_sscc_search_combines_with_job_filter(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    _seed_ssccs(db_path, REAL_SSCCS)
+    assert len(fetch_label_history(db_path, job_number="122984", sscc_contains="1234")) == 1
+    assert fetch_label_history(db_path, job_number="999999", sscc_contains="1234") == []

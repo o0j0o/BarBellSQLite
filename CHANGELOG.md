@@ -3,6 +3,18 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.4 Beta - 2026-09-21
+
+- Job/Label History: added vertical and horizontal scrollbars (the vertical one
+  was being pushed off-screen by the wide table; the grid now uses a proper
+  grid layout, columns keep their width, and the SSCC column no longer clips).
+  Added a live "SSCC contains:" search box - case-insensitive substring match
+  against the full SSCC as you type (GS1 prefix, sequence number, or a fragment
+  spanning both; the full number is never required). Combines with the Job No
+  and Date filters, cleared by "Clear filters", and - like any new search -
+  clears ticked checkboxes. `fetch_label_history()` gained `sscc_contains`
+  (LIKE wildcards in the typed text are escaped, so they match literally).
+
 ## 1.0.3 Beta - 2026-09-16
 
 - Job/Label History screen now supports selecting rows and reprinting them to CSV.

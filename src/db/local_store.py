@@ -255,9 +255,14 @@ def fetch_label_history(
     db_path: Path | str,
     job_number: str | None = None,
     date: str | None = None,
+    sscc_contains: str | None = None,
 ) -> list[FlatLabelRow]:
     """For the GUI history viewer - every logged label, optionally filtered
-    to an exact job number and/or production date, most recent first."""
+    to an exact job number and/or production date, and/or to SSCCs containing
+    `sscc_contains` anywhere (substring, so a prefix, a sequence number, or a
+    fragment spanning both all work - the full SSCC is never required).
+    SQLite's LIKE is case-insensitive for ASCII, covering SSCCs with letters
+    (e.g. TEST-SSCC-#####). Most recent first."""
     conn = _connect(db_path)
     try:
         query = _JOIN_SELECT
@@ -269,6 +274,13 @@ def fetch_label_history(
         if date:
             clauses.append("j.production_date = ?")
             params.append(date)
+        if sscc_contains:
+            # Escape LIKE wildcards so what the user types is matched literally.
+            escaped = (
+                sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            clauses.append("l.sscc LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY l.id DESC"

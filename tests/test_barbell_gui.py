@@ -593,3 +593,102 @@ class TestHistoryReprintSelection:
         assert not (tmp_path / "output").exists()
 
         win.destroy()
+
+
+class TestHistorySsccSearchAndScrolling:
+    def _seed(self, db_path, ssccs):
+        from src.db.local_store import record_generation_run
+        from src.labels import LabelRow
+
+        rows = [
+            LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                sscc=sscc, gtin="00051096184921", package_index=i, label_copy_index=1,
+            )
+            for i, sscc in enumerate(ssccs, start=1)
+        ]
+        record_generation_run(
+            rows, units_per_package=100, labels_per_package=1, test_mode=False, db_path=db_path
+        )
+
+    def _open(self, app, tmp_path, monkeypatch, ssccs):
+        db_path = tmp_path / "barbell.db"
+        self._seed(db_path, ssccs)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        return win, _find_treeview(win)
+
+    def _sscc_entry(self, win):
+        entries = [
+            w for w in win.winfo_children()[0].winfo_children()
+            if w.winfo_class() in ("TEntry", "Entry")
+        ]
+        return entries[2]  # Job No, Date, then SSCC
+
+    def test_typing_in_sscc_box_filters_live_with_no_button_press(self, app, tmp_path, monkeypatch):
+        ssccs = ["008600157112000000108", "008600157112000000115", "008600157112000001234"]
+        win, tree = self._open(app, tmp_path, monkeypatch, ssccs)
+        assert len(tree.get_children()) == 3
+
+        entry = self._sscc_entry(win)
+        entry.insert(0, "1234")  # a sequence-only fragment, no company prefix
+        win.update()
+        assert [tree.item(i, "values")[6] for i in tree.get_children()] == ["008600157112000001234"]
+
+        entry.delete(0, "end")  # clearing the box restores everything
+        win.update()
+        assert len(tree.get_children()) == 3
+
+        win.destroy()
+
+    def test_sscc_box_updates_after_every_keystroke(self, app, tmp_path, monkeypatch):
+        ssccs = ["008600157112000000108", "008600157112000000115"]
+        win, tree = self._open(app, tmp_path, monkeypatch, ssccs)
+        entry = self._sscc_entry(win)
+
+        entry.insert("end", "0000001")  # matches both
+        assert len(tree.get_children()) == 2
+        entry.insert("end", "08")  # now only "...000000108"
+        assert len(tree.get_children()) == 1
+
+        win.destroy()
+
+    def test_clear_filters_also_clears_the_sscc_box(self, app, tmp_path, monkeypatch):
+        win, tree = self._open(app, tmp_path, monkeypatch, ["AAA1", "BBB2"])
+        entry = self._sscc_entry(win)
+        entry.insert(0, "AAA")
+        assert len(tree.get_children()) == 1
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        clear = [b for b in button_frame.winfo_children() if b.cget("text") == "Clear filters"][0]
+        clear.invoke()
+        win.update()
+
+        assert entry.get() == ""
+        assert len(tree.get_children()) == 2
+        win.destroy()
+
+    def test_grid_has_working_vertical_and_horizontal_scrollbars(self, app, tmp_path, monkeypatch):
+        win, tree = self._open(app, tmp_path, monkeypatch, ["AAA1"])
+
+        scrollbars = {
+            str(w.cget("orient")): w
+            for w in tree.master.winfo_children()
+            if w.winfo_class() == "TScrollbar"
+        }
+        assert set(scrollbars) == {"vertical", "horizontal"}
+        # both are gridded (visible), not pushed off-screen or unmanaged
+        assert scrollbars["vertical"].grid_info() != {}
+        assert scrollbars["horizontal"].grid_info() != {}
+        # and both are actually hooked to the tree
+        assert tree.cget("yscrollcommand")
+        assert tree.cget("xscrollcommand")
+        # columns don't shrink to fit - that's what makes horizontal scrolling possible
+        assert not any(bool(int(tree.column(c, "stretch"))) for c in tree["columns"])
+
+        win.destroy()
