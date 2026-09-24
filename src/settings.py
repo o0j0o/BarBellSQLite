@@ -50,6 +50,14 @@ class Settings:
     demo_mode: bool = False
     demo_db_file: str = "barbell_demo.db"
     demo_audit_log_file: str = "demo_gtin_audit_log.jsonl"
+    # Which plant's Label Traxx to connect to - the Windows ODBC DSN name
+    # (e.g. "LT64" for Barbados, "LCJ JAM" for Jamaica; both DSNs must already
+    # exist in that machine's ODBC Data Source Administrator - see
+    # src/db/readonly_connection.py). Empty string (the default) means "use
+    # LT_DSN from .env", so an install that's never touched Setup keeps
+    # working exactly as before. User/password are unaffected - both plants
+    # share the same Label Traxx login, so those stay in .env.
+    label_traxx_dsn: str = ""
 
 
 def load_settings(path: Path | str = DEFAULT_SETTINGS_FILE) -> Settings:

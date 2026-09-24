@@ -3,6 +3,18 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.0.5 Beta - 2026-09-24
+
+- Added multi-plant Label Traxx support: a "Label Traxx Connection" section in
+  Setup with a "Plant" dropdown - "Barbados (LT64)" / "Jamaica (LCJ JAM)" -
+  selects which Windows ODBC DSN BarBell connects with. `Settings.label_traxx_dsn`
+  (empty by default - falls back to `LT_DSN` from `.env`, so an untouched
+  install keeps working unchanged); username/password are unaffected, both
+  plants share the same Label Traxx login. Both DSNs must already exist in a
+  given machine's ODBC Data Source Administrator - Setup only picks between
+  them, it doesn't create them. Takes effect on next BarBell start. See
+  QUESTIONS.md #17.
+
 ## 1.0.4 Beta - 2026-09-21
 
 - Job/Label History: added vertical and horizontal scrollbars (the vertical one

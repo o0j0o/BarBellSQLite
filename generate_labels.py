@@ -56,7 +56,7 @@ def connect(settings):
     barbell_gui.py's BarBellApp._connect() for the GUI equivalent."""
     if settings.demo_mode:
         return DemoConnection()
-    return ReadOnlyConnection()
+    return ReadOnlyConnection(dsn=settings.label_traxx_dsn or None)
 
 
 def prompt(text: str) -> str:

@@ -134,7 +134,7 @@ class BarBellApp(tk.Tk):
         ReadOnlyConnection/DemoConnection directly."""
         if self.settings.demo_mode:
             return DemoConnection()
-        return ReadOnlyConnection()
+        return ReadOnlyConnection(dsn=self.settings.label_traxx_dsn or None)
 
     def _apply_demo_mode_ui(self):
         """Demo Mode is read once at startup (self.settings, like every other

@@ -9,6 +9,31 @@ from src.db.readonly_connection import (
 )
 
 
+# --- dsn selection: multi-plant support (Barbados LT64 / Jamaica LCJ JAM) ---
+
+def test_explicit_dsn_overrides_env_var(monkeypatch):
+    """Settings.label_traxx_dsn (passed as dsn=) must win over LT_DSN from
+    .env - this is how the Setup GUI's Plant selector actually switches
+    which server BarBell talks to."""
+    monkeypatch.setenv("LT_DSN", "LT64")
+    monkeypatch.setenv("LT_USER", "designer")
+    monkeypatch.setenv("LT_PASSWORD", "unused")
+
+    conn = ReadOnlyConnection(dsn="LCJ JAM")
+    assert conn._dsn == "LCJ JAM"
+
+
+def test_dsn_falls_back_to_env_var_when_not_given(monkeypatch):
+    """No explicit dsn (Settings.label_traxx_dsn unset) -> LT_DSN from .env,
+    so an install that's never touched Setup keeps working unchanged."""
+    monkeypatch.setenv("LT_DSN", "LT64")
+    monkeypatch.setenv("LT_USER", "designer")
+    monkeypatch.setenv("LT_PASSWORD", "unused")
+
+    conn = ReadOnlyConnection()
+    assert conn._dsn == "LT64"
+
+
 # --- assert_select_only: the statement guard used before every execute() ---
 
 @pytest.mark.parametrize(

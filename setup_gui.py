@@ -1,10 +1,11 @@
 """
-BarBell setup GUI: edits settings.json (CSV output directory, GS1 Company
-Prefix, SSCC extension digit, counter file location) and shows/manages the
-SSCC counter status.
+BarBell setup GUI: edits settings.json (Label Traxx plant/DSN, CSV output
+directory, GS1 Company Prefix, SSCC extension digit, counter file location)
+and shows/manages the SSCC counter status.
 
 Settings here are separate from .env, which holds only the Label Traxx
-connection credentials - not meant to be hand-edited through a GUI.
+connection credentials (shared across plants) - not meant to be hand-edited
+through a GUI.
 
 The SSCC starting serial number is the one field that's dangerous to change
 casually: setting it is only offered while the counter has never been
@@ -31,6 +32,16 @@ from src.sscc import (
 
 APP_ROOT = Path(__file__).resolve().parent
 
+# Display label -> Windows ODBC DSN name. Both DSNs must already exist in
+# this machine's ODBC Data Source Administrator - Setup only picks which one
+# BarBell connects with, it can't create or edit the DSN itself. The combo
+# box is editable (not restricted to these two), so a future plant's DSN can
+# be typed in directly without a code change.
+LABEL_TRAXX_PLANTS = {
+    "Barbados (LT64)": "LT64",
+    "Jamaica (LCJ JAM)": "LCJ JAM",
+}
+
 
 def validate_company_prefix(raw: str) -> str:
     prefix = raw.strip()
@@ -55,6 +66,7 @@ class SetupGUI(tk.Tk):
 
         self.settings = load_settings()
 
+        self._build_label_traxx_section()
         self._build_output_section()
         self._build_gs1_section()
         self._build_counter_section()
@@ -65,9 +77,43 @@ class SetupGUI(tk.Tk):
 
     # --- widget layout -----------------------------------------------------
 
+    def _build_label_traxx_section(self):
+        frame = ttk.LabelFrame(self, text="Label Traxx Connection", padding=10)
+        frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Plant:").grid(row=0, column=0, sticky="w")
+        reverse_lookup = {dsn: label for label, dsn in LABEL_TRAXX_PLANTS.items()}
+        current_dsn = self.settings.label_traxx_dsn
+        if current_dsn in reverse_lookup:
+            initial_value = reverse_lookup[current_dsn]
+        elif current_dsn:
+            initial_value = current_dsn  # a custom DSN typed in previously
+        else:
+            initial_value = next(iter(LABEL_TRAXX_PLANTS))  # unset -> default to Barbados
+        self.label_traxx_plant_var = tk.StringVar(value=initial_value)
+        ttk.Combobox(
+            frame,
+            textvariable=self.label_traxx_plant_var,
+            values=list(LABEL_TRAXX_PLANTS),
+            width=25,
+        ).grid(row=0, column=1, sticky="w", padx=5)
+        ttk.Label(
+            frame,
+            text=(
+                "Selects which plant's Windows ODBC DSN to connect to - both DSNs must\n"
+                "already exist in this machine's ODBC Data Source Administrator; Setup\n"
+                "only picks between them. Username/password are unaffected - both plants\n"
+                "share the same Label Traxx login. Takes effect the next time BarBell is\n"
+                "started. You can also type a DSN name directly if it's not in the list."
+            ),
+            justify="left",
+            font=("", 8),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
     def _build_output_section(self):
         frame = ttk.LabelFrame(self, text="Label Output", padding=10)
-        frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 5))
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="CSV output directory:").grid(row=0, column=0, sticky="w")
@@ -79,7 +125,7 @@ class SetupGUI(tk.Tk):
 
     def _build_gs1_section(self):
         frame = ttk.LabelFrame(self, text="GS1 / SSCC Configuration", padding=10)
-        frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         frame.columnconfigure(1, weight=1)
 
         ttk.Label(frame, text="GS1 Company Prefix:").grid(row=0, column=0, sticky="w")
@@ -106,7 +152,7 @@ class SetupGUI(tk.Tk):
 
     def _build_counter_section(self):
         frame = ttk.LabelFrame(self, text="SSCC Counter Status", padding=10)
-        frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         frame.columnconfigure(1, weight=1)
 
         self.status_label = ttk.Label(frame, text="")
@@ -128,7 +174,7 @@ class SetupGUI(tk.Tk):
 
     def _build_demo_section(self):
         frame = ttk.LabelFrame(self, text="Demo Mode", padding=10)
-        frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
+        frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
 
         self.demo_mode_var = tk.BooleanVar(value=self.settings.demo_mode)
         ttk.Checkbutton(frame, text="Run as Demo", variable=self.demo_mode_var).pack(anchor="w")
@@ -148,7 +194,7 @@ class SetupGUI(tk.Tk):
 
     def _build_buttons(self):
         frame = ttk.Frame(self, padding=10)
-        frame.grid(row=4, column=0, sticky="ew")
+        frame.grid(row=5, column=0, sticky="ew")
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------
@@ -276,6 +322,13 @@ class SetupGUI(tk.Tk):
             messagebox.showerror("Invalid setting", "SSCC counter file location is required.")
             return
 
+        # A typed value that happens to match a preset label resolves to that
+        # DSN; anything else (a custom DSN name, or blank) is used as typed -
+        # blank means "fall back to LT_DSN from .env" (see src/settings.py).
+        label_traxx_dsn = LABEL_TRAXX_PLANTS.get(
+            self.label_traxx_plant_var.get().strip(), self.label_traxx_plant_var.get().strip()
+        )
+
         # Preserve every other field (setup_password, allow_manual_gtin_override,
         # audit_log_file, local_db_file, etc.) - this dialog only edits the ones
         # built above, and building a fresh Settings() here would silently reset
@@ -287,6 +340,7 @@ class SetupGUI(tk.Tk):
             sscc_extension_digit=extension_digit,
             sscc_state_file=state_file,
             demo_mode=self.demo_mode_var.get(),
+            label_traxx_dsn=label_traxx_dsn,
         )
         save_settings(settings)
         self.settings = settings

@@ -77,7 +77,11 @@ def assert_select_only(sql: str) -> None:
 
 
 class ReadOnlyConnection:
-    """Context-manager wrapper around a read-only pyodbc connection to LT64."""
+    """Context-manager wrapper around a read-only pyodbc connection to
+    Label Traxx. `dsn` selects which plant's Windows ODBC DSN to use (e.g.
+    "LT64" for Barbados, "LCJ JAM" for Jamaica) - callers normally pass
+    `settings.label_traxx_dsn`, falling back to `LT_DSN` from .env if that's
+    unset. See src/settings.py."""
 
     def __init__(self, dsn=None, user=None, password=None, timeout=30):
         load_dotenv()

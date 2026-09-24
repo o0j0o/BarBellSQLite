@@ -475,3 +475,48 @@ viewer and export them again as a reprint.
   up exactly the filtered subset (not the other job's rows), individually
   selected two specific rows, exported, and confirmed both the CSV content and
   the two new `reprint` rows' `superseded_id`s matched the selection exactly.
+
+## 17. Multi-plant Label Traxx: Barbados vs. Jamaica (LCJ) - BUILT (2026-09-24, v1.0.5 Beta)
+
+CLC is deploying a second BarBell install at LCJ (Jamaica), with its own Label
+Traxx server - separate IP, same read-only "designer" login. Greg needs to be
+able to toggle between the two on one machine for testing, not just have two
+permanently separate installs.
+
+- **How the connection actually resolves**: `ReadOnlyConnection` always
+  connects via a named Windows ODBC DSN (`pyodbc.connect(dsn=...)`), never a
+  raw host/port - the real server address for a DSN lives entirely in that
+  machine's own ODBC Data Source Administrator (`odbcad32.exe`), not in
+  BarBell. `.env`'s `LT_HOST`/`LT_PORT` were already vestigial (documented,
+  never read by the code) - left as a comment in `.env.example` recording
+  which DSN points where, not as config the app uses.
+- **Decided against** building a DSN-less connection string (host/port typed
+  into Setup, no Windows DSN needed) - would mean not knowing 4D's ODBC
+  driver's exact connection-string keywords without testing against the real
+  driver, and an IP change would then need updating in Setup on every machine
+  instead of once centrally in Windows' ODBC config. DSN-based keeps that a
+  zero-app-impact, IT-side fix.
+- **`Settings.label_traxx_dsn`** (default `""` = "use `LT_DSN` from `.env`",
+  so an install that's never touched Setup keeps working unchanged).
+  `ReadOnlyConnection` already accepted an optional `dsn=` override before
+  this - only the two call sites (`BarBellApp._connect()`,
+  `generate_labels.connect()`) needed to pass
+  `settings.label_traxx_dsn or None` through. Username/password are
+  unaffected - both plants share the same Label Traxx login, so those stay in
+  `.env` untouched.
+- **Setup GUI**: new "Label Traxx Connection" section (top of the window) with
+  a "Plant" combo box - "Barbados (LT64)" / "Jamaica (LCJ JAM)" - editable,
+  not restricted to those two, so a future plant's DSN can be typed directly
+  without a code change. Selecting a preset resolves to its DSN string on
+  save; typing a custom value is used as-is. Takes effect on next BarBell
+  start, same as every other Setup setting.
+- **Jamaica's DSN name is literally `LCJ JAM`** (with a space - confirmed
+  against the actual 4D DSN Configuration dialog Greg set up: Server Address
+  192.168.246.6, Port 19812, same `designer` login as Barbados). ODBC DSN
+  names with spaces work fine with pyodbc; used as-is throughout.
+- **Still a manual, one-time step per machine**: both DSNs (`LT64` and
+  `LCJ JAM`) must already exist in that machine's Windows ODBC Data Source
+  Administrator, using the 4D ODBC driver, before Setup's dropdown means
+  anything - BarBell only picks between DSNs, it doesn't create them. This
+  is unavoidable with any approach that doesn't reinvent the ODBC connection
+  string (see "decided against" above).
