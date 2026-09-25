@@ -227,7 +227,7 @@ def main():
             "to Label Traxx. No real SSCCs will be issued. ***"
         )
         print(f"Demo job numbers available: {', '.join(DEMO_JOB_NUMBERS)}")
-    elif not settings.gs1_company_prefix:
+    elif not settings.active_gs1_company_prefix:
         print("GS1 Company Prefix isn't set yet - run setup_gui.py first.")
         sys.exit(1)
 
@@ -255,9 +255,9 @@ def main():
         if test_mode:
             preview_sscc = build_test_sscc(1)
         else:
-            next_serial = get_counter_status(settings.sscc_state_file).next_serial or 0
+            next_serial = get_counter_status(settings.active_sscc_state_file).next_serial or 0
             preview_sscc = build_sscc(
-                settings.gs1_company_prefix, settings.sscc_extension_digit, next_serial
+                settings.active_gs1_company_prefix, settings.active_sscc_extension_digit, next_serial
             )
         print_gs1_preview(gtin, production_date, first_package_qty, batch, preview_sscc)
 
@@ -280,9 +280,9 @@ def main():
                 return
 
             gen = SSCCGenerator(
-                settings.gs1_company_prefix,
-                settings.sscc_extension_digit,
-                settings.sscc_state_file,
+                settings.active_gs1_company_prefix,
+                settings.active_sscc_extension_digit,
+                settings.active_sscc_state_file,
             )
 
         rows = assemble_label_rows(

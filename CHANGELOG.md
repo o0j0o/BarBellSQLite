@@ -3,6 +3,27 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.1 Beta - 2026-09-25
+
+- Fixed a silent CSV write failure in Generate Labels (missed its own version bump
+  when it shipped, corrected here): a write failure - most commonly the target file
+  locked open in another program - was previously swallowed with no error shown,
+  even though the labels had already been logged to the database. Now caught and
+  surfaced with a specific message.
+- Added per-plant SSCC counters: Barbados and Jamaica each get their own GS1 Company
+  Prefix, extension digit, and counter file (`Settings.jamaica_*`), selected by the
+  same Plant dropdown Setup already uses for the Label Traxx DSN. Switching the
+  dropdown swaps the whole GS1/SSCC Configuration section (labeled "Editing:
+  Barbados"/"Editing: Jamaica") and the counter status shown below it; saving only
+  touches whichever plant is currently selected, never the other one. Every SSCC
+  BarBell issues - carton generation, pallet generation, the CLI - now resolves the
+  *active* plant's config via `Settings.active_gs1_company_prefix`/
+  `active_sscc_extension_digit`/`active_sscc_state_file` rather than one fixed set
+  of fields. Allocation: Barbados uses even extension digits (0, then 2/4/6/8 once
+  a digit's 100,000-serial range is exhausted), Jamaica uses odd (1, then 3/5/7/9) -
+  Greg's scheme, fully GS1-compliant and collision-proof by construction since the
+  extension digit is the first digit of every SSCC. See QUESTIONS.md #19.
+
 ## 1.1.0 Beta - 2026-09-25
 
 - Added Pallet Labels: scan-to-build pallet labels for mono-lot (one product, one

@@ -15,6 +15,12 @@ from pathlib import Path
 
 DEFAULT_SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
+# The Jamaica Label Traxx DSN name (see label_traxx_dsn below) - the single
+# place that decides "is the active plant Jamaica" for SSCC purposes too.
+# setup_gui.py's LABEL_TRAXX_PLANTS preset dict references this same
+# constant rather than repeating the literal.
+JAMAICA_LABEL_TRAXX_DSN = "LCJ JAM"
+
 
 @dataclass
 class Settings:
@@ -58,6 +64,38 @@ class Settings:
     # working exactly as before. User/password are unaffected - both plants
     # share the same Label Traxx login, so those stay in .env.
     label_traxx_dsn: str = ""
+    # Jamaica's OWN SSCC configuration - separate from the fields above
+    # (which are Barbados'), so the two plants' counters can never collide.
+    # Both plants share one GS1 Company Prefix (defaults to Barbados' own,
+    # editable if that ever changes) - what actually keeps their SSCCs apart
+    # is the extension digit: Barbados uses evens (0, then 2/4/6/8 once a
+    # digit's 100,000-serial range is exhausted), Jamaica uses odds (1, then
+    # 3/5/7/9) - Greg's allocation, 2026-09. See QUESTIONS.md #19.
+    jamaica_gs1_company_prefix: str = ""
+    jamaica_sscc_extension_digit: str = "1"
+    jamaica_sscc_state_file: str = "sscc_state_jamaica.json"
+
+    @property
+    def is_jamaica_plant(self) -> bool:
+        """True when label_traxx_dsn is set to Jamaica's DSN - the same
+        signal Setup's Plant dropdown drives. False (Barbados/default) for
+        an unset or any other DSN, so an install that's never touched
+        Setup keeps behaving exactly as it always has."""
+        return self.label_traxx_dsn == JAMAICA_LABEL_TRAXX_DSN
+
+    @property
+    def active_gs1_company_prefix(self) -> str:
+        if self.is_jamaica_plant:
+            return self.jamaica_gs1_company_prefix or self.gs1_company_prefix
+        return self.gs1_company_prefix
+
+    @property
+    def active_sscc_extension_digit(self) -> str:
+        return self.jamaica_sscc_extension_digit if self.is_jamaica_plant else self.sscc_extension_digit
+
+    @property
+    def active_sscc_state_file(self) -> str:
+        return self.jamaica_sscc_state_file if self.is_jamaica_plant else self.sscc_state_file
 
 
 def load_settings(path: Path | str = DEFAULT_SETTINGS_FILE) -> Settings:

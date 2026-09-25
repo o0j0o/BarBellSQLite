@@ -506,9 +506,9 @@ class BarBellApp(tk.Tk):
             build_test_sscc(1)
             if test_mode
             else build_sscc(
-                self.settings.gs1_company_prefix,
-                self.settings.sscc_extension_digit,
-                get_counter_status(self.settings.sscc_state_file).next_serial or 0,
+                self.settings.active_gs1_company_prefix,
+                self.settings.active_sscc_extension_digit,
+                get_counter_status(self.settings.active_sscc_state_file).next_serial or 0,
             )
         )
 
@@ -612,9 +612,9 @@ class BarBellApp(tk.Tk):
             )
             if confirmed:
                 gen = SSCCGenerator(
-                    self.settings.gs1_company_prefix,
-                    self.settings.sscc_extension_digit,
-                    self.settings.sscc_state_file,
+                    self.settings.active_gs1_company_prefix,
+                    self.settings.active_sscc_extension_digit,
+                    self.settings.active_sscc_state_file,
                 )
         if not confirmed:
             return
@@ -1231,9 +1231,9 @@ class BarBellApp(tk.Tk):
                 pallet_sscc = build_test_sscc(count_pallets(db_path) + 1)
             else:
                 pallet_sscc = SSCCGenerator(
-                    self.settings.gs1_company_prefix,
-                    self.settings.sscc_extension_digit,
-                    self.settings.sscc_state_file,
+                    self.settings.active_gs1_company_prefix,
+                    self.settings.active_sscc_extension_digit,
+                    self.settings.active_sscc_state_file,
                 ).next_sscc()
 
             try:

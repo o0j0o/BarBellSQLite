@@ -22,7 +22,7 @@ from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from src.settings import load_settings, save_settings
+from src.settings import JAMAICA_LABEL_TRAXX_DSN, load_settings, save_settings
 from src.sscc import (
     SSCCGenerator,
     archive_and_reset_state_file,
@@ -36,10 +36,11 @@ APP_ROOT = Path(__file__).resolve().parent
 # this machine's ODBC Data Source Administrator - Setup only picks which one
 # BarBell connects with, it can't create or edit the DSN itself. The combo
 # box is editable (not restricted to these two), so a future plant's DSN can
-# be typed in directly without a code change.
+# be typed in directly without a code change. The GS1/SSCC section below is
+# keyed off the SAME selection - see _on_plant_changed().
 LABEL_TRAXX_PLANTS = {
     "Barbados (LT64)": "LT64",
-    "Jamaica (LCJ JAM)": "LCJ JAM",
+    "Jamaica (LCJ JAM)": JAMAICA_LABEL_TRAXX_DSN,
 }
 
 
@@ -73,7 +74,7 @@ class SetupGUI(tk.Tk):
         self._build_demo_section()
         self._build_buttons()
 
-        self._refresh_counter_status()
+        self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
 
     # --- widget layout -----------------------------------------------------
 
@@ -92,12 +93,17 @@ class SetupGUI(tk.Tk):
         else:
             initial_value = next(iter(LABEL_TRAXX_PLANTS))  # unset -> default to Barbados
         self.label_traxx_plant_var = tk.StringVar(value=initial_value)
-        ttk.Combobox(
+        self.plant_combobox = ttk.Combobox(
             frame,
             textvariable=self.label_traxx_plant_var,
             values=list(LABEL_TRAXX_PLANTS),
             width=25,
-        ).grid(row=0, column=1, sticky="w", padx=5)
+        )
+        self.plant_combobox.grid(row=0, column=1, sticky="w", padx=5)
+        # GS1/SSCC Configuration below is keyed off this same selection -
+        # each plant has its own prefix/extension digit/counter file (see
+        # Settings.jamaica_*, QUESTIONS.md #19) so they can never collide.
+        self.plant_combobox.bind("<<ComboboxSelected>>", self._on_plant_changed)
         ttk.Label(
             frame,
             text=(
@@ -124,31 +130,35 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Browse...", command=self._browse_output_dir).grid(row=0, column=2)
 
     def _build_gs1_section(self):
-        frame = ttk.LabelFrame(self, text="GS1 / SSCC Configuration", padding=10)
-        frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
-        frame.columnconfigure(1, weight=1)
+        self.gs1_frame = ttk.LabelFrame(self, text="GS1 / SSCC Configuration", padding=10)
+        self.gs1_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        self.gs1_frame.columnconfigure(1, weight=1)
+        frame = self.gs1_frame
 
-        ttk.Label(frame, text="GS1 Company Prefix:").grid(row=0, column=0, sticky="w")
-        self.company_prefix_var = tk.StringVar(value=self.settings.gs1_company_prefix)
+        self.gs1_editing_label = ttk.Label(frame, text="", font=("", 9, "bold"))
+        self.gs1_editing_label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        ttk.Label(frame, text="GS1 Company Prefix:").grid(row=1, column=0, sticky="w")
+        self.company_prefix_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.company_prefix_var, width=20).grid(
-            row=0, column=1, sticky="w", padx=5
+            row=1, column=1, sticky="w", padx=5
         )
         ttk.Label(
             frame, text="(can differ per plant - see the GS1 Company Prefix Certificate)"
-        ).grid(row=0, column=2, sticky="w")
+        ).grid(row=1, column=2, sticky="w")
 
-        ttk.Label(frame, text="SSCC extension digit:").grid(row=1, column=0, sticky="w")
-        self.extension_digit_var = tk.StringVar(value=self.settings.sscc_extension_digit)
+        ttk.Label(frame, text="SSCC extension digit:").grid(row=2, column=0, sticky="w")
+        self.extension_digit_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.extension_digit_var, width=5).grid(
-            row=1, column=1, sticky="w", padx=5
+            row=2, column=1, sticky="w", padx=5
         )
 
-        ttk.Label(frame, text="SSCC counter file:").grid(row=2, column=0, sticky="w")
-        self.state_file_var = tk.StringVar(value=self.settings.sscc_state_file)
+        ttk.Label(frame, text="SSCC counter file:").grid(row=3, column=0, sticky="w")
+        self.state_file_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.state_file_var, width=45).grid(
-            row=2, column=1, sticky="ew", padx=5
+            row=3, column=1, sticky="ew", padx=5
         )
-        ttk.Button(frame, text="Browse...", command=self._browse_state_file).grid(row=2, column=2)
+        ttk.Button(frame, text="Browse...", command=self._browse_state_file).grid(row=3, column=2)
 
     def _build_counter_section(self):
         frame = ttk.LabelFrame(self, text="SSCC Counter Status", padding=10)
@@ -198,6 +208,37 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------
+
+    def _selected_dsn(self) -> str:
+        """Resolves the Plant combo box's current value to a DSN name - a
+        preset label resolves to its DSN, anything else (a custom-typed
+        DSN) is used as-is. Same resolution _save() uses."""
+        typed = self.label_traxx_plant_var.get().strip()
+        return LABEL_TRAXX_PLANTS.get(typed, typed)
+
+    def _is_jamaica_selected(self) -> bool:
+        return self._selected_dsn() == JAMAICA_LABEL_TRAXX_DSN
+
+    def _on_plant_changed(self, _event=None):
+        """Swaps the GS1/SSCC fields to whichever plant is now selected -
+        each plant has its own prefix/extension digit/counter file
+        (Settings.jamaica_* vs. the plain fields, which are Barbados') so
+        editing one can never accidentally overwrite the other's. Called on
+        every Plant dropdown change, and once at startup to populate the
+        fields for whichever plant was last saved."""
+        if self._is_jamaica_selected():
+            self.gs1_editing_label.config(text="Editing: Jamaica")
+            self.company_prefix_var.set(
+                self.settings.jamaica_gs1_company_prefix or self.settings.gs1_company_prefix
+            )
+            self.extension_digit_var.set(self.settings.jamaica_sscc_extension_digit)
+            self.state_file_var.set(self.settings.jamaica_sscc_state_file)
+        else:
+            self.gs1_editing_label.config(text="Editing: Barbados")
+            self.company_prefix_var.set(self.settings.gs1_company_prefix)
+            self.extension_digit_var.set(self.settings.sscc_extension_digit)
+            self.state_file_var.set(self.settings.sscc_state_file)
+        self._refresh_counter_status()
 
     def _browse_output_dir(self):
         chosen = filedialog.askdirectory(initialdir=self.output_dir_var.get() or str(APP_ROOT))
@@ -325,26 +366,43 @@ class SetupGUI(tk.Tk):
         # A typed value that happens to match a preset label resolves to that
         # DSN; anything else (a custom DSN name, or blank) is used as typed -
         # blank means "fall back to LT_DSN from .env" (see src/settings.py).
-        label_traxx_dsn = LABEL_TRAXX_PLANTS.get(
-            self.label_traxx_plant_var.get().strip(), self.label_traxx_plant_var.get().strip()
+        label_traxx_dsn = self._selected_dsn()
+        is_jamaica = self._is_jamaica_selected()
+
+        # The GS1/SSCC fields above belong to whichever plant is CURRENTLY
+        # selected - save into that plant's own fields only, so the other
+        # plant's stored prefix/extension digit/counter file (preserved via
+        # replace() below) is never touched by editing this one.
+        plant_gs1_fields = (
+            dict(
+                jamaica_gs1_company_prefix=prefix,
+                jamaica_sscc_extension_digit=extension_digit,
+                jamaica_sscc_state_file=state_file,
+            )
+            if is_jamaica
+            else dict(
+                gs1_company_prefix=prefix,
+                sscc_extension_digit=extension_digit,
+                sscc_state_file=state_file,
+            )
         )
 
         # Preserve every other field (setup_password, allow_manual_gtin_override,
-        # audit_log_file, local_db_file, etc.) - this dialog only edits the ones
-        # built above, and building a fresh Settings() here would silently reset
-        # everything else to its dataclass default.
+        # audit_log_file, local_db_file, the OTHER plant's GS1/SSCC fields, etc.)
+        # - this dialog only edits the ones built above, and building a fresh
+        # Settings() here would silently reset everything else to its default.
         settings = replace(
             self.settings,
             output_dir=output_dir,
-            gs1_company_prefix=prefix,
-            sscc_extension_digit=extension_digit,
-            sscc_state_file=state_file,
             demo_mode=self.demo_mode_var.get(),
             label_traxx_dsn=label_traxx_dsn,
+            **plant_gs1_fields,
         )
         save_settings(settings)
         self.settings = settings
-        messagebox.showinfo("Saved", "Settings saved.")
+        messagebox.showinfo(
+            "Saved", f"Settings saved ({'Jamaica' if is_jamaica else 'Barbados'} GS1/SSCC config)."
+        )
 
 
 if __name__ == "__main__":

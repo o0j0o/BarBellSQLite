@@ -618,3 +618,82 @@ the settled record of what was actually built.
   (`identify_row`/`identify_column`-based clicks, as the history checkboxes
   already use) don't have this problem - they target a widget/position
   directly regardless of focus.
+
+## 19. Per-plant SSCC counters: Barbados vs. Jamaica - BUILT (2026-09-25, v1.1.1 Beta)
+
+Discovered live: testing v1.1.0's Pallet screen surfaced two unrelated real issues,
+both fixed here:
+
+- **Silent CSV write failure.** A real Generate Labels run logged its cartons to
+  `barbell.db` but wrote no CSV, with no error shown at all. Traced to Excel holding
+  the target file open (a plain `PermissionError`) - not a code bug, but `_generate()`
+  had no error handling around the CSV write step, so Tk's default callback handler
+  swallowed the exception silently. Now caught, with a message naming the likely
+  cause and pointing at History's Reprint Selected to re-export once unblocked.
+- **A GS1-128 barcode misread**, chased down live via screenshots of the actual
+  BarTender template: BarBell's exported SSCC is correct and complete (verified
+  programmatically - `build_sscc()` asserts exactly 18 digits, can't silently produce
+  otherwise), but the physical printed label decoded with an extra trailing digit
+  duplicating the check digit. Root cause: BarTender's GS1-128 barcode object, once
+  built via the GS1 Application Identifier Data Source Wizard, mandatorily
+  recalculates and appends its own check digit for AI fields like SSCC (00) that
+  structurally require one - not optional, and blind to whether the source data
+  already ends in a valid one. Fix lives entirely in the BarTender template, not
+  BarBell: the "Serial Shipping Container" field's own Transforms tab (Truncation /
+  Number of characters, previously `<None>`) trims the incoming 18-digit value to its
+  first 17 characters before the barcode object sees it, so BarTender's mandatory
+  check-digit calculation reconstructs the same correct 18th digit itself - same GS1
+  mod-10 algorithm, so no discrepancy risk. Deliberately not "fixed" by truncating
+  BarBell's own CSV `SSCC` column - other things on the same label template (a
+  human-readable caption, say) may also reference that field and need the complete
+  value.
+
+Then, setting up Jamaica's real counter surfaced the actual question this item is
+about: **given both plants share one GS1 Company Prefix (`08600157112`), how do you
+guarantee their SSCCs can never collide?** Confirmed with Greg, GS1-compliant: the
+extension digit (0-9, freely assignable, no GS1-mandated meaning) is a full
+positional field of the SSCC, not merged into the prefix - GEPIR/any compliant
+parser reads it separately, so it can never affect company identification. Since
+each plant runs its own counter independently, using a *different* extension digit
+per plant is what actually prevents a collision - same digit + same prefix + two
+independently-advancing counters would eventually both reach the same serial and
+issue the identical SSCC.
+
+- **Greg's allocation**: Barbados = even extension digits, starting at `0`, moving to
+  `2`/`4`/`6`/`8` in order only once the current digit's full 100,000-serial range
+  (`10^5`, since `16 - 11 = 5` serial digits under an 11-digit prefix) is exhausted.
+  Jamaica = odd digits, same pattern starting at `1`. 500,000 SSCCs per plant,
+  1,000,000 total - the prefix's full theoretical capacity, nothing wasted, no
+  overlap possible by construction.
+- **`Settings.jamaica_gs1_company_prefix`/`jamaica_sscc_extension_digit`/
+  `jamaica_sscc_state_file`**: a complete second set of SSCC fields, alongside the
+  existing ones (which stay Barbados' - no rename, no migration, matches what's
+  already in live use). `jamaica_gs1_company_prefix` defaults empty and falls back to
+  Barbados' prefix via `active_gs1_company_prefix` (see below), matching the
+  shared-prefix reality, while staying independently editable if that ever changes.
+- **`Settings.is_jamaica_plant`/`active_gs1_company_prefix`/
+  `active_sscc_extension_digit`/`active_sscc_state_file`**: the one place that
+  decides which plant's SSCC config is "active," keyed off `label_traxx_dsn` (the
+  same signal the DSN Plant dropdown already drives - see QUESTIONS.md #17) via
+  `JAMAICA_LABEL_TRAXX_DSN`. Every SSCC-issuing call site (`barbell_gui.py`'s carton
+  `_generate()` and the pallet screen's `generate_pallet_label()`,
+  `generate_labels.py`'s CLI) now reads `settings.active_*` instead of the raw
+  fields, so which counter actually gets used always follows the Plant selection,
+  automatically, with nothing to remember to switch separately.
+- **Setup GUI**: the GS1/SSCC Configuration section is now plant-aware - an "Editing:
+  Barbados"/"Editing: Jamaica" label, and the Plant combo box's
+  `<<ComboboxSelected>>` event (`_on_plant_changed()`) swaps the prefix/extension
+  digit/counter file fields (and the Counter Status section below, including
+  Initialize/Reset) to whichever plant is now selected. Saving writes only into the
+  currently-selected plant's own fields (`replace()` preserves the other plant's
+  stored values untouched) - verified live (screenshots + an isolated-process smoke
+  test, `setup_gui.py` still isn't part of the pytest suite - see QUESTIONS.md #18's
+  testing note on why) that editing/saving Jamaica's extension digit never touches
+  Barbados' stored value, and that the two counters' initialized/uninitialized status
+  stay genuinely independent.
+- **Still manual**: moving from one exhausted extension digit to the next (e.g.
+  Barbados' `0` to `2`) is a deliberate Setup step, not automatic - type the new
+  digit, Initialize a fresh counter file for it. At 100,000 serials per digit this is
+  a rare event at any realistic volume, so no proactive low-serial warning was added;
+  Setup's existing counter status ("last issued serial X, next will be Y") is enough
+  for manual monitoring unless Greg wants more.
