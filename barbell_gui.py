@@ -658,9 +658,21 @@ class BarBellApp(tk.Tk):
             )
             return
 
-        out_path = self._write_csv(
-            flat_rows, job_number, packing_slip_number, test_mode=test_mode, demo_mode=self.settings.demo_mode
-        )
+        try:
+            out_path = self._write_csv(
+                flat_rows, job_number, packing_slip_number, test_mode=test_mode,
+                demo_mode=self.settings.demo_mode,
+            )
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "CSV write failed",
+                f"Labels were generated and logged to the database, but the CSV could not be "
+                f"written (often means the file is already open in another program, e.g. Excel "
+                f"- close it and use Job/Label History's Reprint Selected to export this run "
+                f"again):\n{exc}",
+            )
+            return
+
         packages_used = len({r.sscc for r in rows})
         messagebox.showinfo(
             "Labels generated",

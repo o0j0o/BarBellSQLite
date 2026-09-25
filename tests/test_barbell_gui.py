@@ -850,3 +850,56 @@ class TestVoidPallet:
         assert len(info_calls) == 1
 
         win.destroy()
+
+
+class TestGenerateCsvWriteFailure:
+    """A CSV write failure (locked file, permissions, disk full, etc.) must
+    never be silent - the DB row is already logged by this point, so at
+    minimum the operator needs to know the CSV didn't happen."""
+
+    def test_generate_shows_error_and_does_not_crash_when_csv_write_fails(
+        self, app, tmp_path, monkeypatch
+    ):
+        from src.db.local_store import fetch_label_history
+        from src.demo_data import DemoConnection
+        from src.labels import get_product_info, list_packing_slip_line_items
+
+        monkeypatch.setattr(app.settings, "demo_mode", True)
+        monkeypatch.setattr(app.settings, "local_db_file", str(tmp_path / "barbell.db"))
+        monkeypatch.setattr(app.settings, "demo_db_file", str(tmp_path / "barbell_demo.db"))
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "output"))
+        monkeypatch.setattr(app.settings, "demo_audit_log_file", str(tmp_path / "demo_audit.jsonl"))
+
+        conn = DemoConnection()
+        line_item = list_packing_slip_line_items(conn, "DEMO-PS-5001")[0]
+        product = get_product_info(conn, line_item.product_number)
+
+        app.job_number_var.set("DEMO-1001")
+        app._selected_line_item = line_item
+        app._product = product
+        app.gtin_entry_var.set(product.gtin_raw or "")
+        app.units_per_package_var.set("27000")
+        app.labels_per_package_var.set("1")
+        app.production_date_var.set("2026-09-25")
+        app.test_mode_var.set(True)
+
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        errors = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.showerror", lambda title, msg: errors.append((title, msg))
+        )
+        monkeypatch.setattr(
+            "barbell_gui.write_flat_csv",
+            lambda rows, out_path: (_ for _ in ()).throw(
+                PermissionError("[Errno 13] Permission denied")
+            ),
+        )
+
+        app._generate()  # must not raise
+
+        assert len(errors) == 1
+        assert errors[0][0] == "CSV write failed"
+        assert "Permission denied" in errors[0][1]
+
+        history = fetch_label_history(app.settings.demo_db_file, job_number="DEMO-1001")
+        assert len(history) > 0  # DB write still succeeded despite the CSV failure
