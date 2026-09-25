@@ -1,6 +1,6 @@
 import pytest
 
-from barbell_gui import BarBellApp, check_setup_password
+from barbell_gui import check_setup_password
 from src.labels import ProductInfo
 from src.settings import Settings
 from src.version import BUILD_DATE, version_string
@@ -39,19 +39,6 @@ def _all_label_texts(widget):
             texts.append(child.cget("text"))
         texts.extend(_all_label_texts(child))
     return texts
-
-
-@pytest.fixture(scope="module")
-def app():
-    """
-    One shared BarBellApp (one Tk root) for every GUI-dependent test in this
-    module - Tkinter doesn't reliably support creating a fresh Tk() root per
-    test within the same process (a second root after the first is destroyed
-    can leave the Tcl interpreter in a broken state).
-    """
-    app = BarBellApp()
-    yield app
-    app.destroy()
 
 
 def test_set_gtin_status_text_plain(app):
@@ -196,6 +183,20 @@ def test_about_dialog_shows_version_and_build_date_from_version_module(app):
     about_window.destroy()
 
 
+def test_title_bar_shows_version_from_version_module(app, monkeypatch):
+    """Same guard as the About dialog's, for the title bar."""
+    monkeypatch.setattr(app.settings, "demo_mode", False)
+    app._apply_demo_mode_ui()
+    assert app.title() == f"BarBell {version_string()}"
+
+    monkeypatch.setattr(app.settings, "demo_mode", True)
+    app._apply_demo_mode_ui()
+    assert app.title() == f"BarBell {version_string()} - DEMO MODE"
+
+    monkeypatch.setattr(app.settings, "demo_mode", False)
+    app._apply_demo_mode_ui()
+
+
 def _find_treeview(widget):
     for child in widget.winfo_children():
         if child.winfo_class() == "Treeview":
@@ -302,7 +303,7 @@ class TestDemoMode:
         try:
             app._apply_demo_mode_ui()
 
-            assert app.title() == "BarBell - DEMO MODE"
+            assert app.title() == f"BarBell {version_string()} - DEMO MODE"
             assert app.demo_banner.grid_info() != {}  # visible
             assert app.test_mode_var.get() is True
             assert str(app.test_mode_checkbox.cget("state")) == "disabled"
@@ -318,7 +319,7 @@ class TestDemoMode:
         app.settings.demo_mode = False
         app._apply_demo_mode_ui()
 
-        assert app.title() == "BarBell"
+        assert app.title() == f"BarBell {version_string()}"
         assert app.demo_banner.grid_info() == {}  # hidden
         assert str(app.test_mode_checkbox.cget("state")) == "normal"
         assert app.demo_hint_label.cget("text") == ""
@@ -726,3 +727,126 @@ class TestConnectDsnSelection:
         monkeypatch.setattr(app.settings, "label_traxx_dsn", "LCJ JAM")
 
         assert isinstance(app._connect(), DemoConnection)
+
+
+class TestVoidPallet:
+    def _seed_pallet(self, db_path):
+        from src.db.local_store import create_pallet, record_generation_run
+        from src.labels import LabelRow
+
+        cartons = [
+            LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+                item_description="desc", quantity=10000, batch="12298447388",
+                production_date="2026-03-23", sscc=sscc, gtin="00051096184921",
+                package_index=i, label_copy_index=1,
+            )
+            for i, sscc in enumerate(["008600157112000128", "008600157112000296"], start=1)
+        ]
+        record_generation_run(
+            cartons, units_per_package=10000, labels_per_package=1, test_mode=False, db_path=db_path
+        )
+        create_pallet(
+            carton_ssccs=[c.sscc for c in cartons], job_number="122984", quantity=20000,
+            production_date="2026-03-23", packing_slip_number="100495",
+            pallet_sscc="008600157112099999", carton_count=2, db_path=db_path,
+        )
+        return [c.sscc for c in cartons]
+
+    def test_void_pallet_marks_void_and_frees_cartons(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import fetch_label_history
+
+        db_path = tmp_path / "barbell.db"
+        carton_ssccs = self._seed_pallet(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+
+        pallet_iids = [
+            iid for iid in tree.get_children() if tree.item(iid, "values")[6] == "008600157112099999"
+        ]
+        assert len(pallet_iids) == 2  # both print copies
+        for iid in pallet_iids:
+            _click_checkbox_cell(tree, iid)
+        win.update()
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button.invoke()
+        win.update()
+
+        history = fetch_label_history(db_path, job_number="122984")
+        pallet_rows = [r for r in history if r.label_type == "PALLET"]
+        carton_rows = [r for r in history if r.label_type == "CARTON"]
+        assert all(r.status == "void" for r in pallet_rows)
+        assert all(r.pallet_sscc is None for r in carton_rows)
+
+        win.destroy()
+
+    def test_void_pallet_rejects_mixed_carton_and_pallet_selection(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_pallet(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        errors = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.showerror", lambda title, msg, **k: errors.append(msg)
+        )
+        confirms = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.askyesno", lambda *a, **k: (confirms.append(1), True)[1]
+        )
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+
+        # check one pallet row and one carton row
+        pallet_iid = next(
+            iid for iid in tree.get_children() if tree.item(iid, "values")[6] == "008600157112099999"
+        )
+        carton_iid = next(
+            iid for iid in tree.get_children() if tree.item(iid, "values")[6] == "008600157112000128"
+        )
+        _click_checkbox_cell(tree, pallet_iid)
+        _click_checkbox_cell(tree, carton_iid)
+        win.update()
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button.invoke()
+
+        assert len(errors) == 1
+        assert len(confirms) == 0  # never got as far as confirming
+
+        win.destroy()
+
+    def test_void_pallet_does_nothing_when_none_selected(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        self._seed_pallet(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        info_calls = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.showinfo", lambda title, msg, **k: info_calls.append(msg)
+        )
+
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button.invoke()
+
+        assert len(info_calls) == 1
+
+        win.destroy()

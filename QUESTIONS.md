@@ -520,3 +520,101 @@ permanently separate installs.
   anything - BarBell only picks between DSNs, it doesn't create them. This
   is unavoidable with any approach that doesn't reinvent the ODBC connection
   string (see "decided against" above).
+
+## 18. Pallet Labels: scan-to-build - BUILT (2026-09-25, v1.1.0 Beta, branch `pallet-labels`)
+
+Mono-lot (one product, one batch) pallets: scan each carton's SSCC with a
+Bluetooth scanner (keyboard wedge), BarBell links them to a new pallet SSCC
+and sums quantity for AI (37). Planned collaboratively with Greg before any
+code was written - see the plan/conflicts discussion earlier in this
+conversation for the reasoning behind each decision below; this entry is
+the settled record of what was actually built.
+
+- **Schema**: `labels` gained `label_type` (CARTON/PALLET, default CARTON),
+  `pallet_sscc` (carton rows only - plain text, not a FK, since `sscc` isn't
+  unique in this table by design), `carton_count` (pallet rows only), and
+  per-row `production_date`/`packing_slip_number` snapshots. The last two are
+  the one real addition beyond what was asked for: those fields previously
+  lived only on `jobs` (one value per job_number, overwritten on every
+  re-run), so there was no way to actually detect two cartons under the same
+  job_number having been printed on different dates/packing slips once the
+  job had been regenerated - which is exactly the scenario the "warn if
+  production date/packing slip differs" checks exist for. Existing CSV/
+  history code is unchanged (still reads the jobs-joined values); only
+  pallet logic reads the new per-row columns.
+- **Migration** (`local_store._migrate_labels_table()`, run from `_connect()`
+  on every open): additive `ALTER TABLE ... ADD COLUMN`, checked via `PRAGMA
+  table_info` first so it's a no-op - no backup, no ALTER - once the columns
+  already exist. Backs up the `.db` file (timestamped copy, same treatment
+  `archive_and_reset_state_file()` gives the SSCC counter file) only the one
+  time it actually alters something. Backfills the two new per-row columns
+  for pre-existing rows from their current `jobs` values - best-effort, not
+  necessarily the historical truth if that job's been regenerated since (see
+  item 14's known limitation, which this inherits for old data only - new
+  rows get their own accurate snapshot going forward).
+- **Pallet SSCC**: same `SSCCGenerator`/`sscc_state.json` cartons already
+  use - genuinely one counter, so a pallet SSCC can never duplicate a carton
+  SSCC. In test mode, `build_test_sscc()` (same fake placeholder cartons
+  already use), sequenced by `count_pallets()` (distinct pallet SSCCs
+  logged so far) rather than a package index, since a pallet is one item per
+  Generate action with nothing else to derive a sequence from.
+- **Test mode vs. scannable SSCCs (resolved with Greg before building)**:
+  carton test-mode SSCCs are `TEST-SSCC-#####`, not 18 digits - not a real
+  barcode, nothing to scan. Rather than changing carton test-SSCC generation
+  (a bigger, riskier change to already-relied-on behaviour), the pallet
+  screen's scan cleanup (`src/pallet_scan.py::clean_scanned_sscc`) recognizes
+  the exact `TEST-SSCC-#####` pattern as valid INPUT while `test_mode=True`,
+  so the operator types it in (nothing to scan) and the rest of the flow -
+  lookup, every check, totals, generate - is fully exercised in test mode.
+- **Voiding, scoped down with Greg before building**: a carton's own row is
+  never voided - reprinting (existing feature, same SSCC) already covers a
+  damaged/spoiled label, so there's no scenario where a carton needs to
+  become invalid. Void is pallet-only: "Void Pallet" in Job/Label History
+  marks that pallet's row(s) `status='void'` IN PLACE (no new row - unlike a
+  reprint, a void has nothing to replace) and clears `pallet_sscc` on every
+  carton linked to it, freeing them for a rebuilt pallet. The pallet scanner
+  still checks a scanned carton's own `status != 'void'` defensively (the
+  schema's CHECK constraint already allows it), but nothing in the app
+  actually sets a carton to void, so that branch shouldn't trigger in
+  practice. The originally-discussed "superseded, name the replacement"
+  idea was dropped entirely - it doesn't map to anything real here, since a
+  reprint keeps the SAME SSCC and never invalidates the row it copied.
+- **CSV**: no BarTender template setting was added (Greg: sticking with the
+  plain CSV file for now, same `output_dir` as cartons). Filename is
+  `{DEMO_}Pallet_labels_<job_number>_<pallet_sscc>{_TEST}.csv` - job number
+  and pallet SSCC, not packing slip (a pallet's cartons can legitimately
+  carry different packing slips - warned, not blocked - so there's no single
+  packing slip to name the file after the way a normal run's CSV is).
+  `CSV_FIELDNAMES` gained `CartonCount`/`LabelType` trailing columns for
+  EVERY BarBell CSV, not just pallets (one shared writer) - blank
+  CartonCount and `LabelType=CARTON` for ordinary carton rows. Flagging in
+  case BarTender's existing carton template needs to tolerate two new
+  trailing columns.
+- **Atomicity**: the SSCC counter (a JSON file) and the SQLite database are
+  two different storage systems that can't share one transaction - issuing
+  the pallet SSCC happens first, then the Jobs+Labels-side work (pallet
+  insert + stamping `pallet_sscc` on every scanned carton row, including
+  every print-copy row sharing a carton's SSCC) is one real SQLite
+  transaction. This mirrors the existing, already-accepted risk window
+  between `assemble_label_rows()` issuing carton SSCCs and
+  `record_generation_run()` logging them - not a new risk class. If the CSV
+  write fails AFTER the pallet row is committed, nothing is lost: the pallet
+  already exists in history with its SSCC, and Reprint Selected (existing
+  feature) regenerates the CSV from it, same SSCC, no new one burned.
+- **GUI-only**: `generate_labels.py` (the CLI) does not get a pallet flow -
+  confirmed with Greg (scan-to-build is inherently interactive: live totals,
+  a grid, confirm-to-proceed warnings - none of it maps onto text prompts).
+- **Testing note**: `tests/conftest.py` now holds the shared, session-scoped
+  `app` fixture (moved out of `test_barbell_gui.py`, which used to be
+  module-scoped) so `test_pallet_screen_gui.py` can reuse the same one Tk
+  root rather than risking a second `tk.Tk()` in the same process (see
+  test_barbell_gui.py's own long-standing comment on why that's fragile).
+  Also worth knowing for future GUI tests: a synthetic `<Return>` key event
+  (`widget.event_generate("<Return>")`) is only delivered to a widget that
+  actually holds real OS focus - the first Toplevel a test session creates
+  gets it for free, but every window after that needs an explicit
+  `win.focus_force(); widget.focus_force()` first, or the event is silently
+  never dispatched (no exception, just nothing happens). Mouse events
+  (`identify_row`/`identify_column`-based clicks, as the history checkboxes
+  already use) don't have this problem - they target a widget/position
+  directly regardless of focus.

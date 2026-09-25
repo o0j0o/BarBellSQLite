@@ -3,6 +3,42 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.0 Beta - 2026-09-25
+
+- Added Pallet Labels: scan-to-build pallet labels for mono-lot (one product, one
+  batch) pallets, using a Bluetooth barcode scanner as a keyboard wedge. New
+  "Pallet Labels..." button on the home screen opens a screen to enter the
+  expected carton count, scan each carton's SSCC (cleaned up and validated -
+  AIM prefix/GS-FNC1/AI-prefix stripped, 18 digits, valid GS1 check digit, a
+  specific message if the contents barcode was scanned by mistake), and see
+  a running grid/totals. Scans are checked against BarBell's own label history:
+  blocked outright if the SSCC isn't found, belongs to a pallet already, is
+  voided, is already on another pallet, is a duplicate on this pallet, has a
+  different GTIN/batch, the expected count is already reached, or it mixes
+  test and production cartons; warned-and-confirmed if the production date,
+  packing slip, or printing plant differs from the first carton scanned (the
+  pallet uses the earliest production date). Generate Pallet Label allocates a
+  new SSCC from the same counter/extension digit cartons use, links every
+  scanned carton to it, and writes a `Pallet_labels_<job>_<sscc>.csv` in one
+  DB transaction before the CSV is attempted - a failed CSV write never burns
+  a second SSCC, since the pallet row (and its SSCC) is already safely saved
+  and can be re-exported via Job/Label History's existing Reprint. Preview
+  Barcode shows the pallet's contents barcode without reserving an SSCC.
+- Pallets are rows in the existing `labels` table (`label_type` CARTON/PALLET),
+  not a separate table - `pallet_sscc` links a carton to its pallet,
+  `carton_count` records how many cartons a pallet actually carries. Added
+  per-row `production_date`/`packing_slip_number` snapshots (previously only
+  on `jobs`, one value per job number) so a carton's own history is preserved
+  even if its job is later regenerated with different values - needed for the
+  pallet screen's differs-from-the-rest checks to mean anything. Migration is
+  additive, backfills pre-existing rows best-effort from their current jobs
+  row, and backs up the `.db` file first - see QUESTIONS.md #18.
+- Job/Label History: added Pallet SSCC and Label Type columns; searching by a
+  pallet's SSCC now also finds its cartons. New "Void Pallet" action marks a
+  pallet's rows void in place and frees its cartons to be re-scanned onto a
+  rebuilt pallet - the SSCC itself is never reused.
+- Built on branch `pallet-labels`, not merged to `main`.
+
 ## 1.0.5 Beta - 2026-09-24
 
 - Added multi-plant Label Traxx support: a "Label Traxx Connection" section in

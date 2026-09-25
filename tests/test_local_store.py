@@ -154,13 +154,15 @@ def test_flat_rows_feed_write_csv_unchanged_and_match_expected_columns(tmp_path)
     assert reader[0] == [
         "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
         "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
-        "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
+        "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex", "CartonCount", "LabelType",
     ]
     assert len(reader) == 5  # header + 4 label rows
     first_data_row = reader[1]
     assert first_data_row[0] == "122984"  # JobNumber
     assert first_data_row[4] == "47388"  # ProductNo
     assert first_data_row[7] == "27000"  # Quantity
+    assert first_data_row[14] == ""  # CartonCount - blank for a carton row
+    assert first_data_row[15] == "CARTON"  # LabelType
 
 
 # --- create_reprint_rows: reprint/void design (QUESTIONS.md #16) -----------
@@ -259,9 +261,10 @@ def test_reprint_rows_feed_write_csv_in_the_same_flat_format(tmp_path):
     assert reader[0] == [
         "JobNumber", "PackingSlipNumber", "CustomerNumber", "CustomerName", "ProductNo",
         "ItemNumber", "ItemDescription", "Quantity", "Batch", "ProductionDate",
-        "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex",
+        "SSCC", "GTIN", "PackageIndex", "LabelCopyIndex", "CartonCount", "LabelType",
     ]
     assert reader[1][10] == originals[0].sscc  # SSCC column unchanged from the original
+    assert reader[1][15] == "CARTON"  # LabelType - a reprint of a carton is still a carton
 
 
 # --- fetch_label_history: SSCC substring search ------------------------------
