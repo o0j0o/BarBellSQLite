@@ -557,6 +557,88 @@ def find_carton_by_sscc(sscc: str, db_path: Path | str) -> CartonInfo | None:
         conn.close()
 
 
+@dataclass
+class AvailableCarton:
+    """One carton that could still go onto a pallet - what the Pallet
+    screen's "Select Carton SSCC" list shows for each row."""
+
+    sscc: str
+    job_number: str
+    item_number: str
+    description: str
+    batch: str
+    gtin: str | None
+    quantity: int
+    production_date: str | None
+
+
+def list_available_cartons(
+    db_path: Path | str,
+    test_mode: bool,
+    job_number: str | None = None,
+    sscc_contains: str | None = None,
+    batch: str | None = None,
+    gtin: str | None = None,
+    exclude_ssccs=(),
+) -> list[AvailableCarton]:
+    """
+    Cartons not yet on any pallet and not voided, one entry per SSCC (print
+    copies and reprints collapse), for picking by hand instead of scanning.
+    Only cartons of the given test/production kind are listed, since the two
+    can never share a pallet. batch/gtin narrow the list to what could join
+    a pallet that already has cartons on it; exclude_ssccs hides cartons
+    already picked on the screen but not yet saved to a pallet. Newest run
+    first, cartons in sequence order within a run.
+    """
+    conn = _connect(db_path)
+    try:
+        clauses = [
+            "l.label_type = 'CARTON'", "l.pallet_sscc IS NULL", "l.status != 'void'",
+            "j.test_mode = ?",
+        ]
+        params: list = [int(test_mode)]
+        if job_number:
+            clauses.append("j.job_number = ?")
+            params.append(job_number)
+        if sscc_contains:
+            escaped = (
+                sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            clauses.append("l.sscc LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        if batch:
+            clauses.append("j.batch = ?")
+            params.append(batch)
+        if gtin:
+            clauses.append("j.gtin = ?")
+            params.append(gtin)
+        exclude = list(exclude_ssccs)
+        if exclude:
+            clauses.append(f"l.sscc NOT IN ({','.join('?' * len(exclude))})")
+            params.extend(exclude)
+
+        cur = conn.execute(
+            f"""
+            SELECT l.sscc, j.job_number, j.item_number, j.item_description, j.batch, j.gtin,
+                   l.quantity, COALESCE(l.production_date, j.production_date)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE {' AND '.join(clauses)}
+            GROUP BY l.sscc
+            ORDER BY MIN(l.created_at) DESC, MIN(l.id) ASC
+            """,
+            params,
+        )
+        return [
+            AvailableCarton(
+                sscc=r[0], job_number=r[1], item_number=r[2], description=r[3], batch=r[4],
+                gtin=r[5], quantity=r[6], production_date=r[7],
+            )
+            for r in cur.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
 def count_pallets(db_path: Path | str) -> int:
     """Distinct pallet SSCCs logged so far (both print copies of the same
     pallet count once) - used to pick a never-repeated sequence number for

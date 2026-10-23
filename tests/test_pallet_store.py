@@ -359,3 +359,51 @@ def test_count_pallets_counts_distinct_pallet_ssccs_not_print_copies(tmp_path):
 
 def test_count_pallets_zero_on_fresh_db(tmp_path):
     assert count_pallets(tmp_path / "fresh.db") == 0
+
+
+# --- list_available_cartons -------------------------------------------------
+
+def test_list_available_cartons_excludes_palletised_voided_and_other_mode(tmp_path):
+    from src.db.local_store import list_available_cartons
+
+    db_path = tmp_path / "barbell.db"
+    ssccs = list(seed(db_path, ssccs=("086001571120000012", "086001571120000029", "086001571120000036")))
+    create_pallet(
+        carton_ssccs=[ssccs[0]], job_number="122984", quantity=10000,
+        production_date="2026-03-23", packing_slip_number="100495",
+        pallet_sscc="086001571120099999", carton_count=1, db_path=db_path,
+    )
+
+    available = list_available_cartons(db_path, test_mode=False)
+    assert [c.sscc for c in available] == ssccs[1:]
+    assert available[0].description == "233458 - JWN White O/P Rum B 750Ml USA - PS"
+    assert available[0].batch == "12298447388"
+    assert available[0].quantity == 10000
+
+    assert list_available_cartons(db_path, test_mode=True) == []  # these are production cartons
+
+    void_pallet("086001571120099999", db_path)  # frees ssccs[0] again
+    assert [c.sscc for c in list_available_cartons(db_path, test_mode=False)] == ssccs
+
+
+def test_list_available_cartons_collapses_print_copies_and_applies_filters(tmp_path):
+    from src.db.local_store import list_available_cartons
+
+    db_path = tmp_path / "barbell.db"
+    record_generation_run(
+        make_carton_rows(ssccs=("086001571120000012", "086001571120000029"))
+        + make_carton_rows(ssccs=("086001571120000012",)),  # a second print copy of carton 1
+        units_per_package=10000, labels_per_package=2, test_mode=False, db_path=db_path,
+    )
+
+    all_cartons = list_available_cartons(db_path, test_mode=False)
+    assert [c.sscc for c in all_cartons] == ["086001571120000012", "086001571120000029"]
+
+    assert [c.sscc for c in list_available_cartons(db_path, False, sscc_contains="0029")] == [
+        "086001571120000029"
+    ]
+    assert list_available_cartons(db_path, False, batch="nope") == []
+    assert list_available_cartons(db_path, False, job_number="000000") == []
+    assert [c.sscc for c in list_available_cartons(
+        db_path, False, exclude_ssccs=["086001571120000012"]
+    )] == ["086001571120000029"]

@@ -1,6 +1,11 @@
 import pytest
 
-from src.db.local_store import fetch_label_history, find_carton_by_sscc, record_generation_run
+from src.db.local_store import (
+    create_pallet,
+    fetch_label_history,
+    find_carton_by_sscc,
+    record_generation_run,
+)
 from src.labels import LabelRow
 from src.sscc import SSCCGenerator
 
@@ -467,3 +472,121 @@ class TestReturnToMainScreen:
         )
         _button(win, "Return to Main Screen").invoke()
         assert not win.winfo_exists()
+
+
+def _click_checkbox_cell(tree, iid):
+    bbox = tree.bbox(iid, "#1")
+    assert bbox, f"row {iid!r} isn't rendered/visible - call update() first"
+    tree.event_generate("<Button-1>", x=bbox[0] + bbox[2] // 2, y=bbox[1] + bbox[3] // 2)
+
+
+class TestCartonPicker:
+    """The "Select Carton SSCC..." fallback for when the scanner isn't working."""
+
+    SSCCS = ["008600157112000128", "008600157112000296", "008600157112000463"]
+
+    def _open_picker(self, win, expected="5"):
+        _entries(win)[0].insert(0, expected)
+        win.update()
+        _button(win, "Select Carton SSCC").invoke()
+        picker = win.winfo_children()[-1]
+        picker.update()
+        return picker, _find_treeview(picker)
+
+    def test_button_disabled_until_valid_count_entered(self, pallet_win):
+        win, _ = pallet_win
+        button = _button(win, "Select Carton SSCC")
+        assert str(button.cget("state")) == "disabled"
+
+        _entries(win)[0].insert(0, "3")
+        win.update()
+        assert str(button.cget("state")) == "normal"
+
+    def test_lists_only_cartons_not_on_a_pallet_with_description_and_batch(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [
+            make_carton_row(s, item_description="JWN White Rum 750ml", package_index=i)
+            for i, s in enumerate(self.SSCCS, start=1)
+        ])
+        create_pallet(
+            carton_ssccs=[self.SSCCS[0]], job_number="122984", quantity=10000,
+            production_date="2026-03-23", packing_slip_number="100495",
+            pallet_sscc="008600157112099999", carton_count=1, db_path=db_path,
+        )
+
+        _, tree = self._open_picker(win)
+
+        assert list(tree.get_children()) == self.SSCCS[1:]
+        values = tree.item(self.SSCCS[1], "values")
+        assert values[1:4] == (self.SSCCS[1], "JWN White Rum 750ml", "12298447388")
+
+    def test_checked_cartons_are_added_and_leave_the_list(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        picker, tree = self._open_picker(win)
+
+        for sscc in self.SSCCS[:2]:
+            _click_checkbox_cell(tree, sscc)
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+        picker.update()
+
+        pallet_tree = _find_treeview(win, exclude=(tree,))
+        assert list(pallet_tree.get_children()) == self.SSCCS[:2]
+        assert list(tree.get_children()) == self.SSCCS[2:]
+
+    def test_adding_nothing_checked_changes_nothing(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(self.SSCCS[0])])
+        infos = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+        picker, tree = self._open_picker(win)
+
+        _button(picker, "Add Selected").invoke()
+
+        assert len(infos) == 1
+        assert len(_find_treeview(win, exclude=(tree,)).get_children()) == 0
+
+    def test_exceeding_expected_count_adds_up_to_the_limit_and_reports_the_rest(
+        self, pallet_win, monkeypatch
+    ):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        errors = []
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append(msg))
+        picker, tree = self._open_picker(win, expected="2")
+
+        for sscc in self.SSCCS:
+            _click_checkbox_cell(tree, sscc)
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+
+        assert len(_find_treeview(win, exclude=(tree,)).get_children()) == 2
+        assert len(errors) == 1 and "Added 2 of 3" in errors[0]
+
+    def test_once_a_carton_is_on_the_pallet_only_its_batch_is_listed(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(self.SSCCS[0]), make_carton_row(self.SSCCS[1])])
+        seed_cartons(
+            db_path,
+            [make_carton_row(self.SSCCS[2], batch="99999947388", job_number="999999")],
+        )
+        picker, tree = self._open_picker(win)
+        assert set(tree.get_children()) == set(self.SSCCS)  # nothing on the pallet yet
+
+        _click_checkbox_cell(tree, self.SSCCS[0])
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+        picker.update()
+
+        assert list(tree.get_children()) == [self.SSCCS[1]]  # other batch is hidden
+
+    def test_sscc_filter_narrows_the_list(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        picker, tree = self._open_picker(win)
+
+        _entries(picker)[1].insert(0, "0296")
+        picker.update()
+
+        assert list(tree.get_children()) == [self.SSCCS[1]]

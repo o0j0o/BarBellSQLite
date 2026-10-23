@@ -34,6 +34,7 @@ from src.db.local_store import (
     fetch_label_history,
     fetch_pallet_report,
     find_carton_by_sscc,
+    list_available_cartons,
     record_generation_run,
     void_pallet,
     write_flat_csv,
@@ -1062,6 +1063,10 @@ class BarBellApp(tk.Tk):
         scan_entry = ttk.Entry(scan_frame, textvariable=scan_var, width=30, state="disabled")
         scan_entry.pack(side="left", padx=(4, 12))
 
+        # Scanning is the default; this is the fallback if the scanner fails.
+        pick_button = ttk.Button(scan_frame, text="Select Carton SSCC...", state="disabled")
+        pick_button.pack(side="left", padx=(0, 12))
+
         scan_feedback_label = ttk.Label(scan_frame, text="", font=("", 10, "bold"))
         scan_feedback_label.pack(side="left")
 
@@ -1076,7 +1081,9 @@ class BarBellApp(tk.Tk):
             return value if value >= 1 else None
 
         def sync_scan_entry_enabled(*_):
-            scan_entry.config(state="normal" if expected_count() is not None else "disabled")
+            state = "normal" if expected_count() is not None else "disabled"
+            scan_entry.config(state=state)
+            pick_button.config(state=state)
 
         expected_count_var.trace_add("write", sync_scan_entry_enabled)
 
@@ -1147,6 +1154,28 @@ class BarBellApp(tk.Tk):
             except RuntimeError:
                 pass  # no sound device - not fatal, the on-screen message still shows
 
+        def add_carton_by_sscc(sscc: str, parent=None) -> tuple[bool, str]:
+            """The one path a carton takes onto the pallet - scanned or
+            picked from the list: look it up, run the block/warn checks,
+            confirm any warnings, add it. Returns (added, message)."""
+            carton = find_carton_by_sscc(sscc, db_path)
+            check = check_carton_for_pallet(
+                carton, scanned_cartons, expected_count() or 0, pallet_test_mode_var.get()
+            )
+            if check.blocked_reason:
+                return False, check.blocked_reason
+
+            for warning in check.warnings:
+                if not messagebox.askyesno(
+                    "Confirm carton", f"{warning}\n\nAdd this carton to the pallet anyway?",
+                    parent=parent or win,
+                ):
+                    return False, "Scan discarded."
+
+            scanned_cartons.append(check.carton)
+            refresh_grid_and_totals()
+            return True, f"{sscc} added."
+
         def on_scan_submit(_event=None):
             raw = scan_var.get()
             scan_var.set("")
@@ -1160,26 +1189,169 @@ class BarBellApp(tk.Tk):
                 show_feedback(str(exc), ok=False)
                 return
 
-            carton = find_carton_by_sscc(sscc, db_path)
-            check = check_carton_for_pallet(
-                carton, scanned_cartons, expected_count() or 0, pallet_test_mode_var.get()
-            )
-            if check.blocked_reason:
-                show_feedback(check.blocked_reason, ok=False)
-                return
-
-            for warning in check.warnings:
-                if not messagebox.askyesno(
-                    "Confirm carton", f"{warning}\n\nAdd this carton to the pallet anyway?", parent=win
-                ):
-                    show_feedback("Scan discarded.", ok=False)
-                    return
-
-            scanned_cartons.append(check.carton)
-            refresh_grid_and_totals()
-            show_feedback(f"{sscc} added.", ok=True)
+            ok, message = add_carton_by_sscc(sscc)
+            show_feedback(message, ok=ok)
 
         scan_entry.bind("<Return>", on_scan_submit)
+
+        # --- or pick from a list, if the scanner isn't working ---------------
+
+        def open_carton_picker():
+            """
+            Fallback to scanning: a list of every carton not yet on a pallet
+            (same kind - test/production - as this pallet), to check and add
+            in bulk. Goes through add_carton_by_sscc() exactly like a scan,
+            so every block/warning rule applies identically.
+            """
+            picker = tk.Toplevel(win)
+            picker.title("Select Carton SSCC")
+            picker.geometry("1000x520")
+            picker.minsize(600, 300)
+            picker.transient(win)
+
+            CHECKED, UNCHECKED = "☑", "☐"
+            checked: set[str] = set()  # tree iids (== SSCC) currently checked
+
+            filter_frame = ttk.Frame(picker, padding=10)
+            filter_frame.pack(fill="x")
+            ttk.Label(filter_frame, text="Job No:").pack(side="left")
+            job_var = tk.StringVar()
+            ttk.Entry(filter_frame, textvariable=job_var, width=12).pack(side="left", padx=(4, 12))
+            ttk.Label(filter_frame, text="SSCC contains:").pack(side="left")
+            sscc_var = tk.StringVar()
+            ttk.Entry(filter_frame, textvariable=sscc_var, width=22).pack(side="left", padx=(4, 12))
+
+            status_label = ttk.Label(picker, text="", padding=(10, 0, 10, 10))
+            status_label.pack(side="bottom", fill="x")
+            button_row = ttk.Frame(picker, padding=(10, 0, 10, 6))
+            button_row.pack(side="bottom", fill="x")
+
+            tree_frame = ttk.Frame(picker, padding=(10, 0, 10, 0))
+            tree_frame.pack(side="top", fill="both", expand=True)
+            tree_frame.rowconfigure(0, weight=1)
+            tree_frame.columnconfigure(0, weight=1)
+
+            pick_columns = ("sel", "sscc", "description", "batch", "qty", "job_number", "production_date")
+            pick_headings = {
+                "sscc": "SSCC", "description": "Description", "batch": "Batch", "qty": "Qty",
+                "job_number": "Job No", "production_date": "Production Date",
+            }
+            pick_widths = {
+                "sscc": 170, "description": 330, "batch": 120, "qty": 70, "job_number": 80,
+                "production_date": 110,
+            }
+            pick_tree = ttk.Treeview(tree_frame, columns=pick_columns, show="headings")
+            pick_tree.heading("sel", text=UNCHECKED, command=lambda: toggle_all())
+            pick_tree.column("sel", width=30, anchor="center", stretch=False)
+            for col in pick_columns[1:]:
+                pick_tree.heading(col, text=pick_headings[col])
+                pick_tree.column(col, width=pick_widths[col], anchor="w", stretch=False)
+            pv = ttk.Scrollbar(tree_frame, orient="vertical", command=pick_tree.yview)
+            ph = ttk.Scrollbar(tree_frame, orient="horizontal", command=pick_tree.xview)
+            pick_tree.configure(yscrollcommand=pv.set, xscrollcommand=ph.set)
+            pick_tree.grid(row=0, column=0, sticky="nsew")
+            pv.grid(row=0, column=1, sticky="ns")
+            ph.grid(row=1, column=0, sticky="ew")
+
+            def redraw_checkbox(iid: str):
+                values = list(pick_tree.item(iid, "values"))
+                values[0] = CHECKED if iid in checked else UNCHECKED
+                pick_tree.item(iid, values=values)
+
+            def sync_heading():
+                rows = pick_tree.get_children()
+                pick_tree.heading(
+                    "sel", text=CHECKED if rows and all(i in checked for i in rows) else UNCHECKED
+                )
+
+            def toggle_all():
+                rows = pick_tree.get_children()
+                select = not (rows and all(i in checked for i in rows))
+                for iid in rows:
+                    (checked.add if select else checked.discard)(iid)
+                    redraw_checkbox(iid)
+                sync_heading()
+
+            def on_click(event):
+                if pick_tree.identify_region(event.x, event.y) != "cell":
+                    return
+                if pick_tree.identify_column(event.x) != "#1":
+                    return
+                iid = pick_tree.identify_row(event.y)
+                if not iid:
+                    return
+                (checked.discard if iid in checked else checked.add)(iid)
+                redraw_checkbox(iid)
+                sync_heading()
+
+            pick_tree.bind("<Button-1>", on_click)
+
+            def refresh_list(*_):
+                checked.clear()
+                pick_tree.delete(*pick_tree.get_children())
+                reference = scanned_cartons[0] if scanned_cartons else None
+                try:
+                    cartons = list_available_cartons(
+                        db_path,
+                        test_mode=pallet_test_mode_var.get(),
+                        job_number=job_var.get().strip() or None,
+                        sscc_contains=sscc_var.get().strip() or None,
+                        batch=reference.batch if reference else None,
+                        gtin=reference.gtin if reference else None,
+                        exclude_ssccs=[c.sscc for c in scanned_cartons],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    messagebox.showerror("Lookup failed", str(exc), parent=picker)
+                    return
+                for c in cartons:
+                    pick_tree.insert(
+                        "", tk.END, iid=c.sscc,
+                        values=(
+                            UNCHECKED, c.sscc, c.description, c.batch, c.quantity, c.job_number,
+                            c.production_date,
+                        ),
+                    )
+                sync_heading()
+                note = f" - only batch {reference.batch}, matching the pallet so far" if reference else ""
+                status_label.config(
+                    text=f"{len(cartons)} carton(s) not yet on a pallet"
+                    f"{' (test)' if pallet_test_mode_var.get() else ''}{note}"
+                )
+
+            def add_checked():
+                picks = [iid for iid in pick_tree.get_children() if iid in checked]
+                if not picks:
+                    messagebox.showinfo("Nothing selected", "Check one or more cartons first.", parent=picker)
+                    return
+                added, problems = 0, []
+                for sscc in picks:
+                    ok, message = add_carton_by_sscc(sscc, parent=picker)
+                    if ok:
+                        added += 1
+                    else:
+                        problems.append(f"{sscc}: {message}")
+                        if "Already scanned" in message:  # count reached - the rest would all fail
+                            break
+                if problems:
+                    messagebox.showerror(
+                        "Some cartons were not added",
+                        f"Added {added} of {len(picks)}.\n\n" + "\n".join(problems[:8])
+                        + (f"\n...and {len(problems) - 8} more" if len(problems) > 8 else ""),
+                        parent=picker,
+                    )
+                refresh_list()
+                if not problems:
+                    status_label.config(text=f"Added {added} carton(s) to the pallet.")
+
+            ttk.Button(filter_frame, text="Search / Refresh", command=refresh_list).pack(side="left")
+            ttk.Button(button_row, text="Add Selected to Pallet", command=add_checked).pack(side="left")
+            ttk.Button(button_row, text="Close", command=picker.destroy).pack(side="right")
+
+            refresh_list()
+            job_var.trace_add("write", refresh_list)
+            sscc_var.trace_add("write", refresh_list)
+
+        pick_button.config(command=open_carton_picker)
 
         # --- remove / clear --------------------------------------------------
 

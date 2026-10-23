@@ -3,6 +3,19 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.3 Beta - 2026-10-23
+
+- Pallet Labels: added a "Select Carton SSCC..." button as a fallback for when the
+  scanner isn't working (scanning stays the default). It opens a list of every carton
+  not yet on a pallet - SSCC, description, batch, quantity, job, production date -
+  filterable by job number and SSCC fragment; check one or more and "Add Selected to
+  Pallet". Cartons already on a pallet or voided never appear, only cartons of the
+  same kind as the pallet (test vs. production) are listed, and once the pallet has a
+  carton the list narrows to that carton's batch/GTIN. Picked cartons go through the
+  exact same checks and confirmations as a scan (same code path), so nothing can be
+  added by hand that a scan would have blocked. Like the scan box, the button is
+  enabled once an expected carton count is entered.
+
 ## 1.1.2 Beta - 2026-10-23
 
 - Added the Pallet Report: in Job/Label History, check a pallet's row (or any carton
