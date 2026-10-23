@@ -3,6 +3,21 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.2 Beta - 2026-10-23
+
+- Added the Pallet Report: in Job/Label History, check a pallet's row (or any carton
+  already on it) and click "Pallet Report (PDF)" to get an A4-landscape PDF of the
+  pallet's contents, saved to the output folder as `Pallet_report_<pallet SSCC>.pdf`
+  and opened automatically. The top of the first page carries the pallet's SSCC
+  barcode (a smaller copy repeats on every later page) with its job, packing slip,
+  production date, carton count and total quantity; below, one row per carton shows
+  its SSCC, description, quantity, batch, and a small GS1-128 contents barcode
+  (`(02)(11)(37)(10)`) built by the same code as the carton's own label. Multi-page
+  for large pallets, with a totals row at the end. Test-mode pallets print a "TEST
+  PALLET" placeholder in place of the pallet barcode, since a fake SSCC can't be
+  encoded. A voided pallet is refused (a void frees all its cartons). Pages are
+  drawn with Pillow - no new dependency - so the text isn't selectable in the PDF.
+
 ## 1.1.1 Beta - 2026-09-25
 
 - Fixed a silent CSV write failure in Generate Labels (missed its own version bump

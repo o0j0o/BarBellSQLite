@@ -637,6 +637,91 @@ def create_pallet(
         conn.close()
 
 
+@dataclass
+class PalletReportCarton:
+    """One carton on a pallet, as the Pallet Report prints it - the same
+    fields the carton's own label carries, so the report's small contents
+    barcode is built from exactly what the label's was."""
+
+    sscc: str
+    item_number: str
+    description: str
+    quantity: int
+    batch: str
+    gtin: str | None
+    production_date: str
+
+
+@dataclass
+class PalletReport:
+    pallet_sscc: str
+    job_number: str
+    packing_slip_number: str | None
+    production_date: str | None
+    test_mode: bool
+    created_at: str
+    cartons: list[PalletReportCarton]
+
+    @property
+    def total_quantity(self) -> int:
+        return sum(c.quantity for c in self.cartons)
+
+
+def fetch_pallet_report(pallet_sscc: str, db_path: Path | str) -> PalletReport:
+    """
+    Everything the Pallet Report needs for one pallet: the pallet's own row
+    plus one entry per carton linked to it (cartons.pallet_sscc), in the
+    order they were originally generated. A carton with several print copies
+    or a reprint appears once, not once per copy. Raises ValueError if
+    pallet_sscc isn't a pallet, or has been voided (a void frees every
+    carton, so there'd be nothing left to list).
+    """
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            SELECT l.status, l.job_number, l.packing_slip_number,
+                   COALESCE(l.production_date, j.production_date), j.test_mode, l.created_at
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.sscc = ? AND l.label_type = 'PALLET'
+            ORDER BY l.id LIMIT 1
+            """,
+            (pallet_sscc,),
+        )
+        pallet = cur.fetchone()
+        if pallet is None:
+            raise ValueError(f"No pallet found with SSCC {pallet_sscc!r}")
+        status, job_number, packing_slip_number, production_date, test_mode, created_at = pallet
+        if status == STATUS_VOID:
+            raise ValueError(f"Pallet {pallet_sscc} has been voided - it no longer holds any cartons")
+
+        cur = conn.execute(
+            """
+            SELECT l.sscc, j.item_number, j.item_description, l.quantity, j.batch, j.gtin,
+                   COALESCE(l.production_date, j.production_date)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.pallet_sscc = ? AND l.label_type = 'CARTON'
+            GROUP BY l.sscc
+            ORDER BY MIN(l.id)
+            """,
+            (pallet_sscc,),
+        )
+        cartons = [
+            PalletReportCarton(
+                sscc=row[0], item_number=row[1], description=row[2], quantity=row[3],
+                batch=row[4], gtin=row[5], production_date=row[6],
+            )
+            for row in cur.fetchall()
+        ]
+        return PalletReport(
+            pallet_sscc=pallet_sscc, job_number=job_number,
+            packing_slip_number=packing_slip_number, production_date=production_date,
+            test_mode=bool(test_mode), created_at=created_at, cartons=cartons,
+        )
+    finally:
+        conn.close()
+
+
 def void_pallet(pallet_sscc: str, db_path: Path | str) -> int:
     """
     One transaction: marks every labels row for this pallet SSCC (both

@@ -14,13 +14,28 @@ from barcode.writer import ImageWriter
 from PIL import Image
 
 
-def render_barcode_image(barcode_data: str, module_height: float = 15.0) -> Image.Image:
+def render_barcode_image(
+    barcode_data: str,
+    module_height: float = 15.0,
+    module_width: float | None = None,
+    quiet_zone: float | None = None,
+) -> Image.Image:
     """
     barcode_data: raw GS1-128 data from src/gs1.py's build_*_barcode_data()
     functions (FNC1 already embedded where required, no parentheses).
     Returns a PIL Image - the human-readable text is turned off since the
     AI-formatted string is already shown separately (and would otherwise
     render the FNC1 byte as a stray character - see Gs1_128.get_fullcode()).
+
+    module_width/quiet_zone (both mm at the writer's 300 DPI) are only for
+    callers that need a smaller or tighter barcode than the on-screen
+    preview's python-barcode defaults - e.g. the Pallet Report's per-carton
+    barcodes. Left as None, the library defaults apply, unchanged.
     """
+    options = {"write_text": False, "module_height": module_height}
+    if module_width is not None:
+        options["module_width"] = module_width
+    if quiet_zone is not None:
+        options["quiet_zone"] = quiet_zone
     bc = Gs1_128(barcode_data, writer=ImageWriter())
-    return bc.render(writer_options={"write_text": False, "module_height": module_height})
+    return bc.render(writer_options=options)

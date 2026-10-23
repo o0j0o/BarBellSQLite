@@ -1,0 +1,185 @@
+import datetime
+
+import numpy as np
+import pytest
+import zxingcpp
+
+from src.db.local_store import (
+    PalletReport,
+    PalletReportCarton,
+    create_pallet,
+    fetch_pallet_report,
+    record_generation_run,
+    void_pallet,
+)
+from src.labels import LabelRow
+from src.pallet_report import _paginate, build_pallet_report_pdf, render_pallet_report_pages
+
+PALLET_SSCC = "008600157112099999"
+GTIN = "00051096184921"
+
+
+def carton_rows(ssccs, quantity=10000, copies=1):
+    return [
+        LabelRow(
+            job_number="122984", packing_slip_number="100495", customer_number="J00005",
+            customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+            item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=quantity,
+            batch="12298447388", production_date="2026-03-23", sscc=sscc, gtin=GTIN,
+            package_index=i, label_copy_index=copy,
+        )
+        for i, sscc in enumerate(ssccs, start=1)
+        for copy in range(1, copies + 1)
+    ]
+
+
+def seed_pallet(db_path, ssccs=("008600157112000128", "008600157112000296"), copies=1):
+    record_generation_run(
+        carton_rows(ssccs, copies=copies),
+        units_per_package=10000, labels_per_package=copies, test_mode=False, db_path=db_path,
+    )
+    create_pallet(
+        carton_ssccs=list(ssccs), job_number="122984", quantity=10000 * len(ssccs),
+        production_date="2026-03-23", packing_slip_number="100495",
+        pallet_sscc=PALLET_SSCC, carton_count=len(ssccs), db_path=db_path,
+    )
+    return list(ssccs)
+
+
+def make_report(carton_count, pallet_sscc=PALLET_SSCC, test_mode=False):
+    cartons = [
+        PalletReportCarton(
+            sscc=f"00860015711200{i:04d}"[:18].ljust(18, "0"), item_number="233458",
+            description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=10000 + i,
+            batch="12298447388", gtin=GTIN, production_date="2026-03-23",
+        )
+        for i in range(carton_count)
+    ]
+    return PalletReport(
+        pallet_sscc=pallet_sscc, job_number="122984", packing_slip_number="100495",
+        production_date="2026-03-23", test_mode=test_mode,
+        created_at="2026-09-25T14:03:00+00:00", cartons=cartons,
+    )
+
+
+def decoded_texts(pages):
+    texts = []
+    for page in pages:
+        for result in zxingcpp.read_barcodes(np.array(page.convert("L"))):
+            texts.append(result.text)
+    return texts
+
+
+# --- fetch_pallet_report -----------------------------------------------------
+
+def test_fetch_pallet_report_lists_each_carton_once_in_generation_order(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    ssccs = seed_pallet(db_path, copies=2)  # two print copies per carton
+
+    report = fetch_pallet_report(PALLET_SSCC, db_path)
+
+    assert report.pallet_sscc == PALLET_SSCC
+    assert report.job_number == "122984"
+    assert report.packing_slip_number == "100495"
+    assert report.production_date == "2026-03-23"
+    assert report.test_mode is False
+    assert [c.sscc for c in report.cartons] == ssccs
+    assert report.total_quantity == 20000
+    first = report.cartons[0]
+    assert first.description == "233458 - JWN White O/P Rum B 750Ml USA - PS"
+    assert (first.quantity, first.batch, first.gtin) == (10000, "12298447388", GTIN)
+
+
+def test_fetch_pallet_report_rejects_unknown_sscc(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    seed_pallet(db_path)
+    with pytest.raises(ValueError, match="No pallet found"):
+        fetch_pallet_report("008600157112000128", db_path)  # a carton, not a pallet
+
+
+def test_fetch_pallet_report_rejects_voided_pallet(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    seed_pallet(db_path)
+    void_pallet(PALLET_SSCC, db_path)
+    with pytest.raises(ValueError, match="voided"):
+        fetch_pallet_report(PALLET_SSCC, db_path)
+
+
+# --- layout ---------------------------------------------------------------
+
+def test_paginate_single_page_when_everything_fits():
+    assert _paginate(0) == [(0, 0)]
+    assert _paginate(3) == [(0, 3)]
+
+
+def test_paginate_covers_every_carton_exactly_once():
+    for count in (1, 7, 8, 9, 19, 20, 21, 60, 100):
+        pages = _paginate(count)
+        covered = [i for start, end in pages for i in range(start, end)]
+        assert covered == list(range(count)), count
+
+
+def test_totals_row_gets_its_own_page_rather_than_overflowing():
+    # find a count where the last carton fills a page exactly with no room left for the totals row
+    for count in range(1, 60):
+        pages = _paginate(count)
+        if pages[-1][0] == pages[-1][1] and count > 0:
+            assert len(pages) >= 2
+            return
+    pytest.fail("expected at least one carton count that pushes the totals row to its own page")
+
+
+def test_report_pages_are_a4_landscape_1bit():
+    pages = render_pallet_report_pages(make_report(3))
+    assert len(pages) == 1
+    assert pages[0].mode == "1"
+    assert pages[0].size == (3508, 2480)
+
+
+# --- barcodes decode to what the labels carry ------------------------------
+
+def test_pallet_and_carton_barcodes_decode_to_label_values():
+    report = make_report(3)
+    texts = decoded_texts(render_pallet_report_pages(report))
+
+    assert f"(00){PALLET_SSCC}" in texts
+    for carton in report.cartons:
+        assert f"(02){GTIN}(11)260323(37){carton.quantity}(10)12298447388" in texts
+
+
+def test_multi_page_report_repeats_pallet_barcode_and_lists_every_carton():
+    report = make_report(30)
+    pages = render_pallet_report_pages(report, printed_at=datetime.datetime(2026, 10, 23, 9, 0))
+
+    assert len(pages) > 1
+    texts = decoded_texts(pages)
+    assert texts.count(f"(00){PALLET_SSCC}") == len(pages)  # one per page
+    contents = [t for t in texts if t.startswith("(02)")]
+    assert sorted(contents) == sorted(
+        f"(02){GTIN}(11)260323(37){c.quantity}(10)12298447388" for c in report.cartons
+    )
+
+
+def test_test_pallet_gets_a_placeholder_instead_of_a_pallet_barcode():
+    texts = decoded_texts(render_pallet_report_pages(make_report(2, pallet_sscc="TEST-SSCC-00001", test_mode=True)))
+
+    assert not any(t.startswith("(00)") for t in texts)
+    assert len([t for t in texts if t.startswith("(02)")]) == 2  # carton contents still render
+
+
+def test_carton_without_gtin_prints_a_note_instead_of_crashing():
+    report = make_report(2)
+    report.cartons[0].gtin = None
+    texts = decoded_texts(render_pallet_report_pages(report))
+
+    assert len([t for t in texts if t.startswith("(02)")]) == 1
+
+
+# --- PDF output ----------------------------------------------------------------
+
+def test_build_pallet_report_pdf_writes_a_pdf_with_one_page_per_report_page(tmp_path):
+    out = build_pallet_report_pdf(make_report(30), tmp_path / "sub" / "report.pdf")
+
+    data = out.read_bytes()
+    assert data.startswith(b"%PDF")
+    assert data.count(b"/Type /Page\n") == len(_paginate(30))

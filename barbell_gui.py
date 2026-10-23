@@ -15,6 +15,7 @@ Run with:
 """
 
 import datetime
+import os
 import subprocess
 import sys
 import tkinter as tk
@@ -31,6 +32,7 @@ from src.db.local_store import (
     create_pallet,
     create_reprint_rows,
     fetch_label_history,
+    fetch_pallet_report,
     find_carton_by_sscc,
     record_generation_run,
     void_pallet,
@@ -51,6 +53,7 @@ from src.labels import (
     list_packing_slip_line_items,
     list_packing_slips_for_job,
 )
+from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import load_settings
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
@@ -686,6 +689,12 @@ class BarBellApp(tk.Tk):
         out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
         return write_flat_csv(rows, out_path)
 
+    @staticmethod
+    def _open_file(path: Path) -> None:
+        """Opens a file in its default Windows viewer - its own method so
+        tests can replace it rather than launching a real PDF reader."""
+        os.startfile(str(path))
+
     # --- job/label history -----------------------------------------------
 
     def _show_history(self):
@@ -929,6 +938,58 @@ class BarBellApp(tk.Tk):
             )
             refresh()
 
+        def pallet_report_selected():
+            """PDF listing every carton on the checked pallet. Accepts a
+            pallet's own row(s) or any carton row already on a pallet - either
+            way it resolves to one pallet SSCC."""
+            selected_ids = [iid for iid in tree.get_children() if iid in checked_ids]
+            if not selected_ids:
+                messagebox.showinfo("Nothing selected", "Check a pallet's row first.", parent=win)
+                return
+
+            pallet_ssccs = set()
+            for iid in selected_ids:
+                values = tree.item(iid, "values")
+                if values[11] == "PALLET":  # label_type column
+                    pallet_ssccs.add(values[6])  # sscc column
+                elif values[12]:  # a carton - its pallet_sscc column
+                    pallet_ssccs.add(values[12])
+            if not pallet_ssccs:
+                messagebox.showerror(
+                    "Invalid selection",
+                    "Check a pallet's row, or a carton that's already on a pallet.",
+                    parent=win,
+                )
+                return
+            if len(pallet_ssccs) > 1:
+                messagebox.showerror(
+                    "Invalid selection", "Check rows for only one pallet at a time.", parent=win
+                )
+                return
+            pallet_sscc = next(iter(pallet_ssccs))
+
+            demo = self.settings.demo_mode
+            db_path = self.settings.demo_db_file if demo else self.settings.local_db_file
+            try:
+                report = fetch_pallet_report(pallet_sscc, db_path)
+                prefix = "DEMO_" if demo else ""
+                suffix = "_TEST" if report.test_mode else ""
+                out_path = build_pallet_report_pdf(
+                    report, Path(self.settings.output_dir) / f"{prefix}Pallet_report_{pallet_sscc}{suffix}.pdf"
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Pallet report failed", str(exc), parent=win)
+                return
+
+            try:
+                self._open_file(out_path)
+            except OSError as exc:
+                messagebox.showinfo(
+                    "Pallet report saved",
+                    f"Saved to:\n{out_path}\n\n(It couldn't be opened automatically: {exc})",
+                    parent=win,
+                )
+
         button_frame = ttk.Frame(filter_frame)
         button_frame.pack(side="left")
         ttk.Button(button_frame, text="Search / Refresh", command=refresh).pack(side="left")
@@ -944,6 +1005,9 @@ class BarBellApp(tk.Tk):
         ).pack(side="left", padx=(12, 0))
         ttk.Button(
             button_frame, text="Void Pallet", command=void_selected_pallet
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            button_frame, text="Pallet Report (PDF)", command=pallet_report_selected
         ).pack(side="left", padx=(8, 0))
 
         refresh()

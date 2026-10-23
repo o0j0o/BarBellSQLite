@@ -852,6 +852,108 @@ class TestVoidPallet:
         win.destroy()
 
 
+class TestPalletReport:
+    PALLET_SSCC = "008600157112099999"
+
+    def _setup(self, app, tmp_path, monkeypatch):
+        db_path = tmp_path / "barbell.db"
+        TestVoidPallet()._seed_pallet(db_path)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db_path))
+        monkeypatch.setattr(app.settings, "demo_mode", False)
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "output"))
+        opened = []
+        monkeypatch.setattr(type(app), "_open_file", staticmethod(lambda path: opened.append(path)))
+        return db_path, opened
+
+    def _open_history(self, app):
+        app._show_history()
+        win = app.winfo_children()[-1]
+        win.update()
+        tree = _find_treeview(win)
+        button_frame = win.winfo_children()[0].winfo_children()[-1]
+        report_button = [
+            b for b in button_frame.winfo_children() if b.cget("text") == "Pallet Report (PDF)"
+        ][0]
+        return win, tree, report_button
+
+    def _iids_for(self, tree, sscc, column=6):
+        return [iid for iid in tree.get_children() if tree.item(iid, "values")[column] == sscc]
+
+    def test_report_for_checked_pallet_row_is_written_and_opened(self, app, tmp_path, monkeypatch):
+        _, opened = self._setup(app, tmp_path, monkeypatch)
+        win, tree, report_button = self._open_history(app)
+
+        _click_checkbox_cell(tree, self._iids_for(tree, self.PALLET_SSCC)[0])
+        win.update()
+        report_button.invoke()
+
+        expected = tmp_path / "output" / f"Pallet_report_{self.PALLET_SSCC}.pdf"
+        assert expected.read_bytes().startswith(b"%PDF")
+        assert opened == [expected]
+        win.destroy()
+
+    def test_checking_a_carton_on_the_pallet_resolves_to_its_pallet(self, app, tmp_path, monkeypatch):
+        _, opened = self._setup(app, tmp_path, monkeypatch)
+        win, tree, report_button = self._open_history(app)
+
+        _click_checkbox_cell(tree, self._iids_for(tree, "008600157112000128")[0])
+        win.update()
+        report_button.invoke()
+
+        assert len(opened) == 1
+        assert opened[0].name == f"Pallet_report_{self.PALLET_SSCC}.pdf"
+        win.destroy()
+
+    def test_nothing_checked_shows_info_and_writes_nothing(self, app, tmp_path, monkeypatch):
+        _, opened = self._setup(app, tmp_path, monkeypatch)
+        infos = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+        win, _, report_button = self._open_history(app)
+
+        report_button.invoke()
+
+        assert len(infos) == 1
+        assert opened == []
+        assert not (tmp_path / "output").exists()
+        win.destroy()
+
+    def test_carton_not_on_a_pallet_is_rejected(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import void_pallet
+
+        db_path, opened = self._setup(app, tmp_path, monkeypatch)
+        void_pallet(self.PALLET_SSCC, db_path)  # frees both cartons
+        errors = []
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append(msg))
+        win, tree, report_button = self._open_history(app)
+
+        _click_checkbox_cell(tree, self._iids_for(tree, "008600157112000128")[0])
+        win.update()
+        report_button.invoke()
+
+        assert len(errors) == 1
+        assert opened == []
+        win.destroy()
+
+    def test_voided_pallet_shows_error(self, app, tmp_path, monkeypatch):
+        from src.db.local_store import void_pallet
+
+        db_path, opened = self._setup(app, tmp_path, monkeypatch)
+        void_pallet(self.PALLET_SSCC, db_path)
+        errors = []
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append((title, msg)))
+        win, tree, report_button = self._open_history(app)
+
+        _click_checkbox_cell(tree, self._iids_for(tree, self.PALLET_SSCC)[0])
+        win.update()
+        report_button.invoke()
+
+        assert len(errors) == 1
+        assert errors[0][0] == "Pallet report failed"
+        assert "voided" in errors[0][1]
+        assert opened == []
+        win.destroy()
+
+
 class TestGenerateCsvWriteFailure:
     """A CSV write failure (locked file, permissions, disk full, etc.) must
     never be silent - the DB row is already logged by this point, so at
