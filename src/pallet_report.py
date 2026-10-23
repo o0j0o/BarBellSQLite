@@ -1,5 +1,5 @@
 """
-Pallet Report: a one-pallet, A4-landscape PDF listing every carton on the
+Pallet Report: a one-pallet, US Letter (8.5" x 11") landscape PDF listing every carton on the
 pallet - carton SSCC, description, quantity, batch, and a small GS1-128
 contents barcode built exactly like the one on the carton's own label
 (src.gs1.build_contents_barcode_data) - with the pallet's own SSCC barcode at
@@ -32,7 +32,7 @@ from src.gs1 import (
 from src.version import version_string
 
 DPI = 300
-PAGE_W_MM, PAGE_H_MM = 297.0, 210.0  # A4 landscape
+PAGE_W_MM, PAGE_H_MM = 11 * 25.4, 8.5 * 25.4  # US Letter, landscape
 MARGIN_MM = 12.0
 
 # Barcode bars are drawn at exactly 2px per module (0.169mm) so every bar is
@@ -50,10 +50,10 @@ LATER_PAGE_TABLE_Y_MM = 28.0
 # Table column left edges / right edge, in mm.
 COL_NUM = 12.0
 COL_SSCC = 24.0
-COL_DESC = 72.0
-COL_QTY_RIGHT = 176.0  # quantity is right-aligned to this edge
-COL_BATCH = 182.0
-COL_BARCODE = 212.0
+COL_DESC = 70.0
+COL_QTY_RIGHT = 160.0  # quantity is right-aligned to this edge
+COL_BATCH = 165.0
+COL_BARCODE = 194.0
 COL_END = PAGE_W_MM - MARGIN_MM
 
 _FONT_CANDIDATES = {
@@ -184,7 +184,7 @@ def _format_created(created_at: str) -> str:
 def render_pallet_report_pages(
     report: PalletReport, printed_at: datetime.datetime | None = None
 ) -> list[Image.Image]:
-    """One 1-bit PIL image per page, A4 landscape at 300 DPI."""
+    """One 1-bit PIL image per page, US Letter landscape at 300 DPI."""
     printed_at = printed_at or datetime.datetime.now()
     pages_ranges = _paginate(len(report.cartons))
     total_pages = len(pages_ranges)

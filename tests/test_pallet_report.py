@@ -119,21 +119,23 @@ def test_paginate_covers_every_carton_exactly_once():
         assert covered == list(range(count)), count
 
 
-def test_totals_row_gets_its_own_page_rather_than_overflowing():
-    # find a count where the last carton fills a page exactly with no room left for the totals row
-    for count in range(1, 60):
+def test_totals_row_always_fits_on_the_last_page():
+    from src import pallet_report as pr
+
+    body_bottom = pr.PAGE_H_MM - pr.MARGIN_MM - pr.FOOTER_H_MM
+    for count in range(0, 200):
         pages = _paginate(count)
-        if pages[-1][0] == pages[-1][1] and count > 0:
-            assert len(pages) >= 2
-            return
-    pytest.fail("expected at least one carton count that pushes the totals row to its own page")
+        start, end = pages[-1]
+        table_y = pr.FIRST_PAGE_TABLE_Y_MM if len(pages) == 1 else pr.LATER_PAGE_TABLE_Y_MM
+        used = table_y + pr.HEADER_ROW_H_MM + (end - start) * pr.ROW_H_MM + pr.TOTALS_H_MM
+        assert used <= body_bottom, count
 
 
-def test_report_pages_are_a4_landscape_1bit():
+def test_report_pages_are_us_letter_landscape_1bit():
     pages = render_pallet_report_pages(make_report(3))
     assert len(pages) == 1
     assert pages[0].mode == "1"
-    assert pages[0].size == (3508, 2480)
+    assert pages[0].size == (3300, 2550)  # 11in x 8.5in at 300 DPI
 
 
 # --- barcodes decode to what the labels carry ------------------------------

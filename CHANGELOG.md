@@ -3,6 +3,11 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.4 Beta - 2026-10-23
+
+- Pallet Report is now US Letter (8.5" x 11", landscape) instead of A4, with the
+  table columns narrowed to fit the slightly shorter page width.
+
 ## 1.1.3 Beta - 2026-10-23
 
 - Pallet Labels: added a "Select Carton SSCC..." button as a fallback for when the
