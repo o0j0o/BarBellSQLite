@@ -222,3 +222,17 @@ def test_company_name_is_printed_when_given():
     with_name = render_pallet_report_pages(report, printed_at=when, company_name="Caribbean Label Crafts Ltd.")[0]
 
     assert without.tobytes() != with_name.tobytes()
+
+
+def test_long_batch_shrinks_to_stay_clear_of_the_contents_barcode():
+    from PIL import Image, ImageDraw
+    from src import pallet_report as pr
+
+    draw = ImageDraw.Draw(Image.new("1", (10, 10)))
+    max_px = pr._px(pr.COL_BARCODE - pr.COL_BATCH - 2.5)
+
+    assert pr._text_width(draw, "12298447388", pr._font(10.5)) <= max_px  # a real batch fits as-is
+    long_batch = "DEMO-1001DEMO-P100"
+    assert pr._text_width(draw, long_batch, pr._font(10.5)) > max_px  # would have overlapped
+    fitted = pr._fit_font(draw, long_batch, max_px, 10.5)
+    assert pr._text_width(draw, long_batch, fitted) <= max_px

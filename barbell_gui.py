@@ -1003,14 +1003,21 @@ class BarBellApp(tk.Tk):
                 job_filter_var.set(""), date_filter_var.set(""), sscc_filter_var.set(""), refresh()
             ),
         ).pack(side="left", padx=(6, 0))
+
+        # Actions on the checked rows get their own row: on one line with the
+        # filters they ran past the edge of the window, hiding Void Pallet and
+        # Pallet Report unless the window was widened.
+        action_frame = ttk.Frame(win, padding=(10, 6, 10, 6))
+        action_frame.pack(side="top", fill="x", before=tree_frame)
+        ttk.Label(action_frame, text="Checked rows:").pack(side="left", padx=(0, 8))
         ttk.Button(
-            button_frame, text="Reprint Selected (Export to CSV)", command=export_selected
-        ).pack(side="left", padx=(12, 0))
+            action_frame, text="Reprint Selected (Export to CSV)", command=export_selected
+        ).pack(side="left")
         ttk.Button(
-            button_frame, text="Void Pallet", command=void_selected_pallet
+            action_frame, text="Void Pallet", command=void_selected_pallet
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
-            button_frame, text="Pallet Report (PDF)", command=pallet_report_selected
+            action_frame, text="Pallet Report (PDF)", command=pallet_report_selected
         ).pack(side="left", padx=(8, 0))
 
         refresh()

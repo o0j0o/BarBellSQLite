@@ -3,6 +3,16 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.6 Beta - 2026-10-26
+
+- Job/Label History: Reprint Selected, Void Pallet and Pallet Report (PDF) now sit on
+  their own "Checked rows:" row under the filters. On one line with them they ran past
+  the right edge of the window at its default width, hiding Void Pallet and Pallet
+  Report unless the window was widened.
+- Pallet Report: a long batch number now shrinks to fit its column instead of running
+  into the contents barcode beside it. (Real 11-digit batches already fit; this guards
+  longer product numbers.)
+
 ## 1.1.5 Beta - 2026-10-26
 
 - Pallet Report: the company name is now printed above the title on every page -

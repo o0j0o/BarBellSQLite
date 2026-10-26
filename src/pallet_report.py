@@ -133,6 +133,16 @@ def _paste_barcode(page: Image.Image, barcode: Image.Image, x_px: int, y_px: int
     page.paste(barcode, (x_px, y_px))
 
 
+def _fit_font(draw, text: str, max_px: int, start_pt: float, min_pt: float = 6.0):
+    """The largest proportional font up to start_pt whose rendering of text
+    fits in max_px - so a long batch shrinks instead of running into the
+    barcode column beside it."""
+    pt = start_pt
+    while pt > min_pt and _text_width(draw, text, _font(pt)) > max_px:
+        pt -= 0.5
+    return _font(pt)
+
+
 def _fit_mono(draw, text: str, max_px: int, start_pt: float, min_pt: float = 5.0):
     pt = start_pt
     while pt > min_pt and _text_width(draw, text, _font(pt, mono=True)) > max_px:
@@ -305,7 +315,8 @@ def render_pallet_report_pages(
                 (_px(COL_QTY_RIGHT) - _text_width(draw, qty_text, body_font), top),
                 qty_text, font=body_font, fill=0,
             )
-            draw.text((_px(COL_BATCH), top), carton.batch, font=body_font, fill=0)
+            batch_font = _fit_font(draw, carton.batch, _px(COL_BARCODE - COL_BATCH - 2.5), 10.5)
+            draw.text((_px(COL_BATCH), top), carton.batch, font=batch_font, fill=0)
 
             contents = _carton_contents_barcode(carton)
             col_w = _px(COL_END - COL_BARCODE)

@@ -378,6 +378,17 @@ class TestDemoMode:
 CHECKED, UNCHECKED = "☑", "☐"
 
 
+def _all_buttons(widget):
+    """Every ttk button anywhere under widget - the History window's buttons
+    sit in two rows (filters, then actions on the checked rows)."""
+    found = []
+    for child in widget.winfo_children():
+        if child.winfo_class() == "TButton":
+            found.append(child)
+        found.extend(_all_buttons(child))
+    return found
+
+
 def _click_checkbox_cell(tree, iid):
     """Simulates the user clicking a row's checkbox cell - bbox() needs a
     real geometry pass first, hence win.update() (not just update_idletasks())
@@ -459,9 +470,8 @@ class TestHistoryReprintSelection:
             if w.winfo_class() in ("TEntry", "Entry")
         ]
         entries[0].insert(0, "111111")
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
         search_button = [
-            b for b in button_frame.winfo_children()
+            b for b in _all_buttons(win)
             if b.winfo_class() in ("TButton", "Button") and b.cget("text") == "Search / Refresh"
         ][0]
         search_button.invoke()
@@ -500,9 +510,8 @@ class TestHistoryReprintSelection:
         assert tree.heading("sel", "text") == CHECKED
 
         # Running Search/Refresh again (even with the same filter) must clear it.
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
         search_button = [
-            b for b in button_frame.winfo_children()
+            b for b in _all_buttons(win)
             if b.winfo_class() in ("TButton", "Button") and b.cget("text") == "Search / Refresh"
         ][0]
         search_button.invoke()
@@ -537,9 +546,8 @@ class TestHistoryReprintSelection:
         _click_checkbox_cell(tree, children[1])
         win.update()
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
         export_button = [
-            b for b in button_frame.winfo_children()
+            b for b in _all_buttons(win)
             if b.winfo_class() in ("TButton", "Button") and "Reprint" in b.cget("text")
         ][0]
         export_button.invoke()
@@ -582,9 +590,8 @@ class TestHistoryReprintSelection:
         win = app.winfo_children()[-1]
         win.update()
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
         export_button = [
-            b for b in button_frame.winfo_children()
+            b for b in _all_buttons(win)
             if b.winfo_class() in ("TButton", "Button") and "Reprint" in b.cget("text")
         ][0]
         export_button.invoke()
@@ -665,8 +672,7 @@ class TestHistorySsccSearchAndScrolling:
         entry.insert(0, "AAA")
         assert len(tree.get_children()) == 1
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
-        clear = [b for b in button_frame.winfo_children() if b.cget("text") == "Clear filters"][0]
+        clear = [b for b in _all_buttons(win) if b.cget("text") == "Clear filters"][0]
         clear.invoke()
         win.update()
 
@@ -777,8 +783,7 @@ class TestVoidPallet:
             _click_checkbox_cell(tree, iid)
         win.update()
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
-        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button = [b for b in _all_buttons(win) if b.cget("text") == "Void Pallet"][0]
         void_button.invoke()
         win.update()
 
@@ -820,8 +825,7 @@ class TestVoidPallet:
         _click_checkbox_cell(tree, carton_iid)
         win.update()
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
-        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button = [b for b in _all_buttons(win) if b.cget("text") == "Void Pallet"][0]
         void_button.invoke()
 
         assert len(errors) == 1
@@ -843,8 +847,7 @@ class TestVoidPallet:
         win = app.winfo_children()[-1]
         win.update()
 
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
-        void_button = [b for b in button_frame.winfo_children() if b.cget("text") == "Void Pallet"][0]
+        void_button = [b for b in _all_buttons(win) if b.cget("text") == "Void Pallet"][0]
         void_button.invoke()
 
         assert len(info_calls) == 1
@@ -870,9 +873,8 @@ class TestPalletReport:
         win = app.winfo_children()[-1]
         win.update()
         tree = _find_treeview(win)
-        button_frame = win.winfo_children()[0].winfo_children()[-1]
         report_button = [
-            b for b in button_frame.winfo_children() if b.cget("text") == "Pallet Report (PDF)"
+            b for b in _all_buttons(win) if b.cget("text") == "Pallet Report (PDF)"
         ][0]
         return win, tree, report_button
 
