@@ -165,7 +165,10 @@ def test_multi_page_report_repeats_pallet_barcode_and_lists_every_carton():
 def test_test_pallet_gets_a_placeholder_instead_of_a_pallet_barcode():
     texts = decoded_texts(render_pallet_report_pages(make_report(2, pallet_sscc="TEST-SSCC-00001", test_mode=True)))
 
-    assert not any(t.startswith("(00)") for t in texts)
+    # no pallet barcode - only the two real-looking carton SSCC barcodes decode
+    assert sorted(t for t in texts if t.startswith("(00)")) == sorted(
+        f"(00){c.sscc}" for c in make_report(2).cartons
+    )
     assert len([t for t in texts if t.startswith("(02)")]) == 2  # carton contents still render
 
 
@@ -185,3 +188,37 @@ def test_build_pallet_report_pdf_writes_a_pdf_with_one_page_per_report_page(tmp_
     data = out.read_bytes()
     assert data.startswith(b"%PDF")
     assert data.count(b"/Type /Page\n") == len(_paginate(30))
+
+
+def test_each_carton_has_its_own_sscc_barcode_below_the_number():
+    report = make_report(3)
+    texts = decoded_texts(render_pallet_report_pages(report))
+
+    for carton in report.cartons:
+        assert f"(00){carton.sscc}" in texts
+
+
+def test_carton_with_placeholder_test_sscc_gets_no_sscc_barcode():
+    report = make_report(2)
+    report.cartons[0].sscc = "TEST-SSCC-00001"
+    texts = decoded_texts(render_pallet_report_pages(report))
+
+    assert "(00)TEST-SSCC-00001" not in texts
+    assert f"(00){report.cartons[1].sscc}" in texts
+
+
+def test_carton_sscc_barcode_is_the_configured_height():
+    from src import pallet_report as pr
+
+    # 7.5mm at 300 DPI is ~89px; rendered bars must match that, not the library default
+    img = pr._barcode_1bit("00008600157112000128", pr.CARTON_SSCC_BARCODE_HEIGHT_MM, pr._CARTON_SSCC_MODULE_MM)
+    assert abs(img.height - pr.CARTON_SSCC_BARCODE_HEIGHT_MM * 300 / 25.4) <= 2
+
+
+def test_company_name_is_printed_when_given():
+    report = make_report(2)
+    when = datetime.datetime(2026, 10, 26, 9, 0)
+    without = render_pallet_report_pages(report, printed_at=when)[0]
+    with_name = render_pallet_report_pages(report, printed_at=when, company_name="Caribbean Label Crafts Ltd.")[0]
+
+    assert without.tobytes() != with_name.tobytes()

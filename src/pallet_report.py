@@ -1,7 +1,7 @@
 """
 Pallet Report: a one-pallet, US Letter (8.5" x 11") landscape PDF listing every carton on the
-pallet - carton SSCC, description, quantity, batch, and a small GS1-128
-contents barcode built exactly like the one on the carton's own label
+pallet - carton SSCC (as a number with its own barcode beneath), description, quantity, batch,
+and a small GS1-128 contents barcode built exactly like the one on the carton's own label
 (src.gs1.build_contents_barcode_data) - with the pallet's own SSCC barcode at
 the top of the first page (and a smaller copy on each later page, so a page
 separated from the rest still identifies its pallet).
@@ -19,7 +19,7 @@ import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from src.barcode_render import render_barcode_image
 from src.db.local_store import PalletReport, PalletReportCarton
@@ -39,13 +39,18 @@ MARGIN_MM = 12.0
 # a whole number of pixels - a fractional module width would alias unevenly.
 _MODULE_MM = 2 * 25.4 / DPI
 _PALLET_MODULE_MM = 4 * 25.4 / DPI  # the pallet's own barcode is the prominent one
+_CARTON_SSCC_MODULE_MM = 3 * 25.4 / DPI  # carton SSCC barcodes: bigger than the contents ones, still compact
+
+# Height of each carton's SSCC barcode, under the SSCC number in its row. The
+# digits are already printed above it, so no human-readable text is drawn.
+CARTON_SSCC_BARCODE_HEIGHT_MM = 7.5
 
 ROW_H_MM = 15.0
 HEADER_ROW_H_MM = 7.0
 TOTALS_H_MM = 9.0
 FOOTER_H_MM = 7.0
 FIRST_PAGE_TABLE_Y_MM = 60.0
-LATER_PAGE_TABLE_Y_MM = 28.0
+LATER_PAGE_TABLE_Y_MM = 30.0
 
 # Table column left edges / right edge, in mm.
 COL_NUM = 12.0
@@ -108,12 +113,15 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_px: int, max_lines: in
 
 
 def _barcode_1bit(barcode_data: str, module_height_mm: float, module_mm: float) -> Image.Image:
-    """The barcode as a 1-bit image with no quiet zone baked in (the page
-    layout supplies the surrounding white space)."""
+    """The barcode as a 1-bit image cropped to the bars themselves - no
+    quiet zone and none of python-barcode's fixed top/bottom padding, so the
+    image is exactly the requested height (the page layout supplies the
+    surrounding white space)."""
     img = render_barcode_image(
         barcode_data, module_height=module_height_mm, module_width=module_mm, quiet_zone=0
-    )
-    return img.convert("L").point(lambda v: 255 if v > 128 else 0).convert("1")
+    ).convert("L")
+    img = img.crop(ImageChops.invert(img).getbbox())
+    return img.point(lambda v: 255 if v > 128 else 0).convert("1")
 
 
 def _paste_barcode(page: Image.Image, barcode: Image.Image, x_px: int, y_px: int, max_w_px: int):
@@ -182,9 +190,12 @@ def _format_created(created_at: str) -> str:
 
 
 def render_pallet_report_pages(
-    report: PalletReport, printed_at: datetime.datetime | None = None
+    report: PalletReport,
+    printed_at: datetime.datetime | None = None,
+    company_name: str | None = None,
 ) -> list[Image.Image]:
-    """One 1-bit PIL image per page, US Letter landscape at 300 DPI."""
+    """One 1-bit PIL image per page, US Letter landscape at 300 DPI.
+    company_name, if given, is printed above the title on every page."""
     printed_at = printed_at or datetime.datetime.now()
     pages_ranges = _paginate(len(report.cartons))
     total_pages = len(pages_ranges)
@@ -200,16 +211,18 @@ def render_pallet_report_pages(
         left, right = _px(MARGIN_MM), _px(COL_END)
 
         # --- header ----------------------------------------------------
-        draw.text((left, _px(MARGIN_MM)), "PALLET CONTENTS REPORT", font=_font(20, bold=True), fill=0)
+        if company_name:
+            draw.text((left, _px(MARGIN_MM - 2)), company_name, font=_font(12, bold=True), fill=0)
+        draw.text((left, _px(MARGIN_MM + 4)), "PALLET CONTENTS REPORT", font=_font(20, bold=True), fill=0)
         page_text = f"Page {page_index + 1} of {total_pages}"
         page_font = _font(10)
         draw.text(
-            (right - _text_width(draw, page_text, page_font), _px(MARGIN_MM + 2)),
+            (right - _text_width(draw, page_text, page_font), _px(MARGIN_MM + 6)),
             page_text, font=page_font, fill=0,
         )
 
         if first:
-            barcode_y = _px(26.0)
+            barcode_y = _px(27.0)
             if pallet_barcode_data:
                 barcode = _barcode_1bit(pallet_barcode_data, 18.0, _PALLET_MODULE_MM)
                 page.paste(barcode, (left, barcode_y))
@@ -241,9 +254,9 @@ def render_pallet_report_pages(
         else:
             if pallet_barcode_data:
                 small = _barcode_1bit(pallet_barcode_data, 8.0, _MODULE_MM)
-                page.paste(small, (right - small.width - _px(40), _px(MARGIN_MM - 2)))
+                page.paste(small, (right - small.width - _px(40), _px(MARGIN_MM - 1)))
             draw.text(
-                (left, _px(MARGIN_MM + 9)), f"Pallet {pallet_ai_text}   Job {report.job_number}",
+                (left, _px(MARGIN_MM + 14)), f"Pallet {pallet_ai_text}   Job {report.job_number}",
                 font=_font(11, bold=True), fill=0,
             )
             table_y_mm = LATER_PAGE_TABLE_Y_MM
@@ -274,6 +287,14 @@ def render_pallet_report_pages(
             top = row_y + _px(1.8)
             draw.text((_px(COL_NUM), top), str(index), font=num_font, fill=0)
             draw.text((_px(COL_SSCC), top), carton.sscc, font=sscc_font, fill=0)
+            if _is_real_sscc(carton.sscc):  # a TEST-SSCC placeholder can't be encoded
+                sscc_barcode = _barcode_1bit(
+                    build_sscc_barcode_data(carton.sscc), CARTON_SSCC_BARCODE_HEIGHT_MM,
+                    _CARTON_SSCC_MODULE_MM,
+                )
+                _paste_barcode(
+                    page, sscc_barcode, _px(COL_SSCC), row_y + _px(6.0), _px(COL_DESC - COL_SSCC - 2)
+                )
 
             desc_lines = _wrap(draw, carton.description, small_font, _px(COL_QTY_RIGHT - 24 - COL_DESC), 3)
             for line_no, line in enumerate(desc_lines):
@@ -291,7 +312,7 @@ def render_pallet_report_pages(
             if contents:
                 data, ai_text = contents
                 barcode = _barcode_1bit(data, 7.0, _MODULE_MM)
-                _paste_barcode(page, barcode, _px(COL_BARCODE), top - _px(0.6), col_w)
+                _paste_barcode(page, barcode, _px(COL_BARCODE), top + _px(0.3), col_w)
                 draw.text(
                     (_px(COL_BARCODE), top + _px(7.8)), ai_text,
                     font=_fit_mono(draw, ai_text, col_w, 7.0), fill=0,
@@ -337,13 +358,16 @@ def render_pallet_report_pages(
 
 
 def build_pallet_report_pdf(
-    report: PalletReport, out_path: Path | str, printed_at: datetime.datetime | None = None
+    report: PalletReport,
+    out_path: Path | str,
+    printed_at: datetime.datetime | None = None,
+    company_name: str | None = None,
 ) -> Path:
     """Writes the report as a PDF at out_path (parent dirs created) and
     returns the path."""
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    pages = render_pallet_report_pages(report, printed_at)
+    pages = render_pallet_report_pages(report, printed_at, company_name)
     pages[0].save(
         out_path, "PDF", resolution=float(DPI), save_all=True, append_images=pages[1:]
     )

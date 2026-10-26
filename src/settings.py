@@ -84,6 +84,11 @@ class Settings:
         return self.label_traxx_dsn == JAMAICA_LABEL_TRAXX_DSN
 
     @property
+    def company_name(self) -> str:
+        """The legal entity name for the active plant, printed on reports."""
+        return "Label Crafts Jamaica Ltd." if self.is_jamaica_plant else "Caribbean Label Crafts Ltd."
+
+    @property
     def active_gs1_company_prefix(self) -> str:
         if self.is_jamaica_plant:
             return self.jamaica_gs1_company_prefix or self.gs1_company_prefix

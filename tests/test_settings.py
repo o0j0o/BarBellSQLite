@@ -105,3 +105,9 @@ def test_editing_jamaica_extension_digit_never_affects_barbados():
     settings.label_traxx_dsn = "LT64"  # switch plants
     assert settings.active_sscc_extension_digit == "0"  # back to Barbados, unaffected
     assert settings.jamaica_sscc_extension_digit == "3"  # Jamaica's edit preserved
+
+
+def test_company_name_follows_the_plant():
+    assert make_settings(label_traxx_dsn="").company_name == "Caribbean Label Crafts Ltd."
+    assert make_settings(label_traxx_dsn="LT64").company_name == "Caribbean Label Crafts Ltd."
+    assert make_settings(label_traxx_dsn=JAMAICA_LABEL_TRAXX_DSN).company_name == "Label Crafts Jamaica Ltd."

@@ -976,7 +976,9 @@ class BarBellApp(tk.Tk):
                 prefix = "DEMO_" if demo else ""
                 suffix = "_TEST" if report.test_mode else ""
                 out_path = build_pallet_report_pdf(
-                    report, Path(self.settings.output_dir) / f"{prefix}Pallet_report_{pallet_sscc}{suffix}.pdf"
+                    report,
+                    Path(self.settings.output_dir) / f"{prefix}Pallet_report_{pallet_sscc}{suffix}.pdf",
+                    company_name=self.settings.company_name,
                 )
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Pallet report failed", str(exc), parent=win)

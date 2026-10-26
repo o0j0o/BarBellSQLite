@@ -892,6 +892,32 @@ class TestPalletReport:
         assert opened == [expected]
         win.destroy()
 
+    @pytest.mark.parametrize(
+        "dsn, expected",
+        [("LT64", "Caribbean Label Crafts Ltd."), ("LCJ JAM", "Label Crafts Jamaica Ltd.")],
+    )
+    def test_report_carries_the_active_plants_company_name(
+        self, app, tmp_path, monkeypatch, dsn, expected
+    ):
+        import barbell_gui
+
+        _, opened = self._setup(app, tmp_path, monkeypatch)
+        monkeypatch.setattr(app.settings, "label_traxx_dsn", dsn)
+        seen = []
+        real = barbell_gui.build_pallet_report_pdf
+        monkeypatch.setattr(
+            barbell_gui, "build_pallet_report_pdf",
+            lambda report, out_path, **kw: (seen.append(kw.get("company_name")), real(report, out_path, **kw))[1],
+        )
+        win, tree, report_button = self._open_history(app)
+
+        _click_checkbox_cell(tree, self._iids_for(tree, self.PALLET_SSCC)[0])
+        win.update()
+        report_button.invoke()
+
+        assert seen == [expected]
+        win.destroy()
+
     def test_checking_a_carton_on_the_pallet_resolves_to_its_pallet(self, app, tmp_path, monkeypatch):
         _, opened = self._setup(app, tmp_path, monkeypatch)
         win, tree, report_button = self._open_history(app)

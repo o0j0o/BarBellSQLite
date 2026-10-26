@@ -3,6 +3,15 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.5 Beta - 2026-10-26
+
+- Pallet Report: the company name is now printed above the title on every page -
+  "Caribbean Label Crafts Ltd." when Setup's Plant is Barbados, "Label Crafts Jamaica
+  Ltd." when it's Jamaica (`Settings.company_name`, same plant signal as the SSCC
+  config). Each carton's SSCC number now has its own GS1-128 SSCC barcode directly
+  beneath it, 7.5 mm tall with no human-readable line (the digits are already printed
+  above it); test-mode placeholder SSCCs can't be encoded and get no barcode.
+
 ## 1.1.4 Beta - 2026-10-23
 
 - Pallet Report is now US Letter (8.5" x 11", landscape) instead of A4, with the
