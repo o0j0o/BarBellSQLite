@@ -34,7 +34,11 @@ INSTALLER_DIR = ROOT / "installer"
 # %LOCALAPPDATA%\\BarBellBuild, or BARBELL_BUILD_DIR if set.
 BUILD = Path(os.environ.get("BARBELL_BUILD_DIR") or (Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "BarBellBuild"))
 STAGE = BUILD / "stage"
-OUTPUT = BUILD / "Output"  # next to the other build output (not inside OneDrive)
+OUTPUT = BUILD / "Output"  # where the compiler writes it (next to the other build output)
+# Where the FINISHED installer is put for people: a real, visible folder in the project (git-ignored).
+# Not the build folder: when this runs inside the Claude desktop app, anything written under AppData is
+# silently redirected into that app's private storage, where File Explorer can't see it.
+FINAL_OUTPUT = INSTALLER_DIR / "Output"
 
 # The production package's version. The dev copy stays on 1.1.x.
 RELEASE_MAJOR, RELEASE_MINOR, RELEASE_PATCH, RELEASE_BETA = 1, 2, 0, True
@@ -165,6 +169,14 @@ def compile_installer() -> Path:
     return built
 
 
+def publish(built: Path) -> Path:
+    """Copies the finished installer to installer/Output so it can be found and handed out."""
+    FINAL_OUTPUT.mkdir(parents=True, exist_ok=True)
+    target = FINAL_OUTPUT / built.name
+    shutil.copy2(built, target)
+    return target
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-compile", action="store_true", help="build the .exe files only")
@@ -178,7 +190,8 @@ def main() -> int:
         print("\nBuilt the .exe files in", BUILD / "dist")
         return 0
     built = compile_installer()
-    print(f"\nInstaller ready: {built}  ({built.stat().st_size / 1_000_000:.1f} MB)")
+    final = publish(built)
+    print(f"\nInstaller ready: {final}  ({final.stat().st_size / 1_000_000:.1f} MB)")
     return 0
 
 

@@ -3,6 +3,14 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.15 Beta - 2026-11-04
+
+- Installer build: the finished `BarBell-Setup-1.2.0-Beta.exe` is now copied to `installer/Output/` in the
+  project (git-ignored) so it can actually be found and handed out. It used to be left in
+  `%LOCALAPPDATA%\BarBellBuild\Output`, which - when built from inside the Claude desktop app - Windows silently
+  redirects into the app's private storage, so File Explorer reported "Location is not available". The test
+  script looks in `installer\Output` first.
+
 ## 1.1.14 Beta - 2026-11-04
 
 - Windows installer (`installer/`), producing **BarBell-Setup-1.2.0-Beta.exe** - the production package is

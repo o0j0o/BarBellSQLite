@@ -35,7 +35,8 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tool = Join-Path $here 'data_tool.py'
 if (-not $Setup) {
-  $Setup = (Get-ChildItem "$env:LOCALAPPDATA\BarBellBuild\Output\BarBell-Setup-*.exe" -ErrorAction SilentlyContinue |
+  # the finished installer is put in installer\Output beside this script; the build folder is the fallback
+  $Setup = (Get-ChildItem "$here\Output\BarBell-Setup-*.exe", "$env:LOCALAPPDATA\BarBellBuild\Output\BarBell-Setup-*.exe" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
 $expectedLabel = '1.2.0 Beta'
