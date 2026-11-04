@@ -23,6 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from src.backup import BackupError, REASON_MANUAL, create_backup, restore_backup, summarize_restore
 from src.settings import JAMAICA_LABEL_TRAXX_DSN, load_settings, save_settings
 from src.setup_access import SetupAccessLevel
 from src.sscc import (
@@ -80,6 +81,7 @@ class SetupGUI(tk.Tk):
         self._build_gs1_section()
         self._build_counter_section()
         self._build_demo_section()
+        self._build_backup_section()
         self._build_buttons()
 
         self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
@@ -231,9 +233,48 @@ class SetupGUI(tk.Tk):
             font=("", 8),
         ).pack(anchor="w", pady=(2, 0))
 
+    def _build_backup_section(self):
+        frame = ttk.LabelFrame(self, text="Backup and Restore", padding=10)
+        frame.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Backup directory:").grid(row=0, column=0, sticky="w")
+        self.backup_dir_var = tk.StringVar(value=self.settings.backup_dir)
+        ttk.Entry(frame, textvariable=self.backup_dir_var, width=45).grid(
+            row=0, column=1, sticky="ew", padx=5
+        )
+        ttk.Button(frame, text="Browse...", command=self._browse_backup_dir).grid(row=0, column=2)
+
+        ttk.Label(
+            frame,
+            text=(
+                f"BarBell backs up the database and both SSCC counters when it closes (keeping the\n"
+                f"last {self.settings.backup_keep_count}; skipped if nothing changed). Leave blank to turn backups off. "
+                "Choose a folder on another\ndrive or a network share - not inside OneDrive, "
+                "which can corrupt a live database."
+            ),
+            justify="left",
+            font=("", 8),
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(buttons, text="Back Up Now", command=self._backup_now).pack(side="left")
+        self.restore_button = ttk.Button(
+            buttons, text="Restore from Backup...", command=self._restore_from_backup
+        )
+        self.restore_button.pack(side="left", padx=(8, 0))
+        if not self.is_admin:
+            # Restore replaces live data - reserved for the administrator
+            # Setup password (see src/setup_access.py).
+            self.restore_button.config(state="disabled")
+            ttk.Label(
+                buttons, text="Restore needs the administrator Setup password.", font=("", 8)
+            ).pack(side="left", padx=(10, 0))
+
     def _build_buttons(self):
         frame = ttk.Frame(self, padding=10)
-        frame.grid(row=5, column=0, sticky="ew")
+        frame.grid(row=6, column=0, sticky="ew")
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------
@@ -273,6 +314,86 @@ class SetupGUI(tk.Tk):
         chosen = filedialog.askdirectory(initialdir=self.output_dir_var.get() or str(APP_ROOT))
         if chosen:
             self.output_dir_var.set(chosen)
+
+    def _browse_backup_dir(self):
+        chosen = filedialog.askdirectory(initialdir=self.backup_dir_var.get() or str(APP_ROOT))
+        if chosen:
+            self.backup_dir_var.set(chosen)
+
+    def _backup_dir_or_complain(self):
+        folder = self.backup_dir_var.get().strip()
+        if not folder:
+            messagebox.showinfo("Backup", "Choose a backup directory first.")
+            return None
+        return Path(folder)
+
+    def _backup_now(self):
+        folder = self._backup_dir_or_complain()
+        if folder is None:
+            return
+        try:
+            result = create_backup(self.settings, folder, REASON_MANUAL)
+        except BackupError as exc:
+            messagebox.showerror("Backup failed", str(exc))
+            return
+        messagebox.showinfo("Backup", result.message)
+
+    def _restore_from_backup(self):
+        """Pick a backup folder, show exactly what would change, confirm, restore."""
+        dest_root = self._backup_dir_or_complain()
+        if dest_root is None:
+            return
+        chosen = filedialog.askdirectory(
+            initialdir=str(dest_root), title="Choose the backup folder to restore"
+        )
+        if not chosen:
+            return
+        try:
+            summary = summarize_restore(chosen, self.settings)
+        except BackupError as exc:
+            messagebox.showerror("Can't restore from that folder", str(exc))
+            return
+
+        counter_lines = "\n".join(
+            f"  {plant.title()}: backup {c['backup'] if c['backup'] is not None else '-'}, "
+            f"now {c['current'] if c['current'] is not None else '-'}"
+            for plant, c in summary.counters.items()
+        )
+        lost = (
+            f"\n{summary.only_in_current} carton/pallet label(s) issued since this backup will no "
+            "longer appear in history (they stay in the safety backup)."
+            if summary.only_in_current else ""
+        )
+        if not messagebox.askyesno(
+            "Confirm restore",
+            f"Restore the database from the backup made {summary.created_at.replace('T', ' ')} "
+            f"(BarBell {summary.app_version})?\n\n"
+            f"It holds {summary.cartons_and_pallets_in_backup} carton/pallet SSCC(s).{lost}\n\n"
+            f"SSCC counters (last serial issued):\n{counter_lines}\n"
+            "A counter is never moved backwards - each ends at the highest of the backup's, the "
+            "current one, and what the restored database shows was issued.\n\n"
+            "A safety backup of the current data is made first. Close the main BarBell window "
+            "before restoring. Continue?",
+            icon="warning",
+        ):
+            return
+        try:
+            result = restore_backup(chosen, self.settings, dest_root)
+        except BackupError as exc:
+            messagebox.showerror("Restore failed", str(exc))
+            return
+        self._refresh_counter_status()
+        raised = "".join(
+            f"\n  {plant.title()} counter raised {old if old is not None else '-'} -> {new}"
+            for plant, (old, new) in result.counters_raised.items()
+        )
+        messagebox.showinfo(
+            "Restore complete",
+            "Database restored."
+            + (f"\nSafety backup of the previous data: {result.safety_backup}" if result.safety_backup else "")
+            + raised
+            + "\n\nRestart BarBell before continuing.",
+        )
 
     def _browse_state_file(self):
         chosen = filedialog.asksaveasfilename(
@@ -392,6 +513,22 @@ class SetupGUI(tk.Tk):
             messagebox.showerror("Invalid setting", "SSCC counter file location is required.")
             return
 
+        backup_dir = self.backup_dir_var.get().strip()
+        if backup_dir:
+            try:
+                Path(backup_dir).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                messagebox.showerror("Invalid setting", f"Can't use that backup directory: {exc}")
+                return
+            if "onedrive" in backup_dir.lower() and not messagebox.askyesno(
+                "Backup directory is in OneDrive",
+                "That folder is inside OneDrive. OneDrive syncing a live database can corrupt it, "
+                "and a backup that syncs away or conflicts is little protection.\n\n"
+                "Another drive or a network share is safer. Use it anyway?",
+                icon="warning",
+            ):
+                return
+
         # A typed value that happens to match a preset label resolves to that
         # DSN; anything else (a custom DSN name, or blank) is used as typed -
         # blank means "fall back to LT_DSN from .env" (see src/settings.py).
@@ -425,6 +562,7 @@ class SetupGUI(tk.Tk):
             output_dir=output_dir,
             demo_mode=self.demo_mode_var.get(),
             disable_test_mode_checkbox=self.disable_test_mode_var.get(),
+            backup_dir=backup_dir,
             label_traxx_dsn=label_traxx_dsn,
             **plant_gs1_fields,
         )

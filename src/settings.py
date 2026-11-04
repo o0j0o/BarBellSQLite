@@ -62,6 +62,12 @@ class Settings:
     # once at startup like every other setting. Demo Mode still wins - it
     # forces Test mode on and locked so a demo can never issue a real SSCC.
     disable_test_mode_checkbox: bool = False
+    # Where BarBell keeps its backups (see src/backup.py). Empty = backups are
+    # off until a folder is chosen in Setup. Best on another drive or a
+    # network share, NOT inside OneDrive (it syncing live SQLite files can
+    # corrupt them). backup_keep_count is how many rolling backups to keep.
+    backup_dir: str = ""
+    backup_keep_count: int = 10
     demo_audit_log_file: str = "demo_gtin_audit_log.jsonl"
     # Which plant's Label Traxx to connect to - the Windows ODBC DSN name
     # (e.g. "LT64" for Barbados, "LCJ JAM" for Jamaica; both DSNs must already

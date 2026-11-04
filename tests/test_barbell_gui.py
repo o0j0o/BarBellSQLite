@@ -1073,8 +1073,8 @@ class TestMenuBar:
     def test_top_level_items_are_home_then_help(self, app):
         assert _menu_labels(app._menubar) == ["Home", "Help"]
 
-    def test_home_menu_holds_setup_and_exit(self, app):
-        assert _menu_labels(_home_menu(app)) == ["Setup", "Exit"]
+    def test_home_menu_holds_setup_back_up_now_and_exit(self, app):
+        assert _menu_labels(_home_menu(app)) == ["Setup", "Back Up Now", "Exit"]
 
     def test_help_menu_has_help_contacts_about(self, app):
         assert _menu_labels(_help_menu(app)) == ["Help", "Contacts", "About"]
@@ -1384,3 +1384,132 @@ class TestAboutScreenLogos:
         photo = app._about_lcj_logo
         assert abs(photo.width() / photo.height() - source_ratio) / source_ratio < 0.02
         assert photo.width() <= g.ABOUT_LCJ_TARGET_PX
+
+
+class TestBackupOnExit:
+    """Closing BarBell (Home > Exit, or the window's X) backs up first when a
+    backup directory is set in Setup."""
+
+    def _arrange(self, app, tmp_path, monkeypatch, backup_dir="set", demo=False):
+        from pathlib import Path
+
+        from src.db.local_store import record_generation_run
+        from src.labels import LabelRow
+        from src.sscc import _atomic_write_last_serial
+
+        live = tmp_path / "live"
+        live.mkdir()
+        db = live / "barbell.db"
+        record_generation_run(
+            [LabelRow(
+                job_number="122984", packing_slip_number="100495", customer_number="J00005",
+                customer_name="JWN", product_no="47388", item_number="233458", item_description="d",
+                quantity=1000, batch="12298447388", production_date="260323",
+                sscc="008600157112000012", gtin="00051096184921", package_index=1, label_copy_index=1,
+            )],
+            units_per_package=1000, labels_per_package=1, test_mode=False, db_path=db,
+        )
+        _atomic_write_last_serial(live / "sscc_state.json", 12)
+        monkeypatch.setattr(app.settings, "local_db_file", str(db))
+        monkeypatch.setattr(app.settings, "sscc_state_file", str(live / "sscc_state.json"))
+        monkeypatch.setattr(app.settings, "jamaica_sscc_state_file", str(live / "sscc_state_jamaica.json"))
+        monkeypatch.setattr(app.settings, "audit_log_file", str(live / "audit.jsonl"))
+        monkeypatch.setattr(app.settings, "demo_mode", demo)
+        backups = tmp_path / "backups"
+        monkeypatch.setattr(app.settings, "backup_dir", str(backups) if backup_dir == "set" else "")
+        closed = []
+        monkeypatch.setattr(app, "destroy", lambda: closed.append(True))
+        return backups, closed
+
+    def test_exit_yes_backs_up_then_closes(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert closed == [True]
+        made = sorted(p.name for p in backups.iterdir())
+        assert len(made) == 1 and made[0].startswith("barbell_backup_")
+        assert (backups / made[0] / "barbell.db").is_file()
+        assert (backups / made[0] / "sscc_state.json").is_file()
+
+    def test_exit_no_neither_backs_up_nor_closes(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert closed == [] and not backups.exists()
+
+    def test_closing_with_the_window_x_also_backs_up(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+
+        app.tk.call(app.protocol("WM_DELETE_WINDOW"))  # what the X button runs
+
+        assert closed == [True]
+        assert len(list(backups.iterdir())) == 1
+
+    def test_no_backup_directory_means_no_backup_and_a_normal_close(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch, backup_dir="")
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert closed == [True] and not backups.exists()
+
+    def test_demo_mode_never_backs_up(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch, demo=True)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert closed == [True] and not backups.exists()
+
+    def test_a_failed_backup_asks_before_closing_and_no_keeps_the_app_open(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+        (tmp_path / "blocker").write_text("a file, not a folder")
+        monkeypatch.setattr(app.settings, "backup_dir", str(tmp_path / "blocker" / "sub"))
+        prompts = []
+
+        def ask(title, message, **k):
+            prompts.append(title)
+            return title != "Backup failed"  # yes to "are you sure", NO to "exit anyway?"
+
+        monkeypatch.setattr("tkinter.messagebox.askyesno", ask)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert prompts == ["Exit BarBell", "Backup failed"]
+        assert closed == []  # the user said no to exiting without a backup
+
+    def test_a_failed_backup_can_still_be_overridden_so_you_are_never_trapped(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+        (tmp_path / "blocker").write_text("a file, not a folder")
+        monkeypatch.setattr(app.settings, "backup_dir", str(tmp_path / "blocker" / "sub"))
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+
+        _invoke_menu(_home_menu(app), "Exit")
+
+        assert closed == [True]
+
+    def test_back_up_now_makes_a_backup_and_reports_it(self, app, tmp_path, monkeypatch):
+        backups, closed = self._arrange(app, tmp_path, monkeypatch)
+        infos = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+
+        _invoke_menu(_home_menu(app), "Back Up Now")
+        _invoke_menu(_home_menu(app), "Back Up Now")  # nothing changed in between
+
+        assert closed == []  # backing up never closes the app
+        assert len(list(backups.iterdir())) == 1
+        assert infos[0].startswith("Backed up to") and "Nothing has changed" in infos[1]
+
+    def test_back_up_now_without_a_backup_directory_points_to_setup(self, app, tmp_path, monkeypatch):
+        backups, _ = self._arrange(app, tmp_path, monkeypatch, backup_dir="")
+        infos = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+
+        _invoke_menu(_home_menu(app), "Back Up Now")
+
+        assert len(infos) == 1 and "Setup" in infos[0]
+        assert not backups.exists()

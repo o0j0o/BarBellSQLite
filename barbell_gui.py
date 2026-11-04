@@ -26,6 +26,7 @@ from tkinter import messagebox, simpledialog, ttk
 from dotenv import load_dotenv
 from PIL import Image, ImageTk
 
+from src.backup import BackupError, REASON_EXIT, REASON_MANUAL, create_backup
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
 from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
@@ -186,6 +187,9 @@ class BarBellApp(tk.Tk):
         self._build_menu()
         self._build_widgets()
         self._apply_demo_mode_ui()
+        # Closing the window with the X goes through the same backup-on-exit
+        # step as Home > Exit (minus the "are you sure" question).
+        self.protocol("WM_DELETE_WINDOW", self._close_window)
 
     # --- setup ---------------------------------------------------------
 
@@ -1700,6 +1704,7 @@ class BarBellApp(tk.Tk):
 
         home_menu = tk.Menu(menubar, tearoff=False)
         home_menu.add_command(label="Setup", command=self._prompt_setup_password)
+        home_menu.add_command(label="Back Up Now", command=self._back_up_now)
         home_menu.add_command(label="Exit", command=self._confirm_exit)
         menubar.add_cascade(label="Home", menu=home_menu)
 
@@ -1714,7 +1719,47 @@ class BarBellApp(tk.Tk):
 
     def _confirm_exit(self):
         if messagebox.askyesno("Exit BarBell", "Are you sure you want to exit BarBell?", parent=self):
+            self._close_window()
+
+    def _close_window(self):
+        """Back up (if a backup directory is set), then close. A failed
+        backup asks before closing - it never traps you in the app."""
+        if self._backup_before_closing():
             self.destroy()
+
+    def _backup_before_closing(self) -> bool:
+        """True if it's OK to close. Backups are off when no backup directory
+        is set in Setup, and in Demo Mode (which only touches sample data)."""
+        if self.settings.demo_mode or not self.settings.backup_dir:
+            return True
+        try:
+            create_backup(self.settings, self.settings.backup_dir, REASON_EXIT)
+        except Exception as exc:  # noqa: BLE001 - whatever went wrong, offer to close anyway
+            return messagebox.askyesno(
+                "Backup failed",
+                f"BarBell couldn't back up your data:\n\n{exc}\n\nExit anyway?",
+                icon="warning",
+                parent=self,
+            )
+        return True
+
+    def _back_up_now(self):
+        if self.settings.demo_mode:
+            messagebox.showinfo("Back Up Now", "Demo Mode only uses sample data - there's nothing to back up.", parent=self)
+            return
+        if not self.settings.backup_dir:
+            messagebox.showinfo(
+                "Back Up Now",
+                "Backups are off. Choose a backup directory in Setup (Home > Setup) first.",
+                parent=self,
+            )
+            return
+        try:
+            result = create_backup(self.settings, self.settings.backup_dir, REASON_MANUAL)
+        except BackupError as exc:
+            messagebox.showerror("Backup failed", str(exc), parent=self)
+            return
+        messagebox.showinfo("Back Up Now", result.message, parent=self)
 
     def _show_placeholder_screen(self, title: str, text: str):
         win = tk.Toplevel(self)

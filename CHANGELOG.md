@@ -3,6 +3,31 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.9 Beta - 2026-11-04
+
+- Backup and restore (`src/backup.py`). A backup is one timestamped folder holding a
+  consistent set: the SQLite database (copied with SQLite's own online-backup call,
+  so it's safe even if another process has it open), **both SSCC counter files**,
+  `settings.json` and the GTIN audit log, plus a `manifest.json` with SHA-256 hashes.
+- BarBell backs up automatically when it closes (Home > Exit, or the window's X) and
+  on **Home > Back Up Now**. It keeps the newest 10 (`Settings.backup_keep_count`),
+  skips a backup when nothing has changed since the last one (so repeated open/close
+  doesn't push older, different backups out), and never prunes before the new backup
+  has passed an integrity check - a failing backup can't rotate good ones away. A
+  failed backup on exit asks "Exit anyway?" so it never traps you in the app. Off in
+  Demo Mode, and off until a backup directory is set.
+- Setup: new "Backup and Restore" section - **Backup directory** field with Browse,
+  **Back Up Now**, and **Restore from Backup...** (browse to a backup folder; shows
+  what will change before asking; needs the administrator Setup password). Saving a
+  backup directory inside OneDrive asks first, since OneDrive syncing a live database
+  can corrupt it.
+- Restore rules: the backup is verified first (hashes + integrity check); a safety
+  backup of the current data is taken; the database is restored; and **no SSCC
+  counter is ever moved backwards** - each ends at the highest of the backup's, the
+  live file's, and the highest serial found in the restored database. Settings and the
+  audit log are kept in backups for manual recovery but are not overwritten by a
+  restore.
+
 ## 1.1.8 Beta - 2026-11-04
 
 - Main screen: the CLC and LCJ logos are removed from the header, leaving only the
