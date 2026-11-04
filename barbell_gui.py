@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import webbrowser
 import winsound
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -58,6 +59,7 @@ from src.labels import (
     list_packing_slip_line_items,
     list_packing_slips_for_job,
 )
+from src.help_link import resolve_help_url
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import load_settings
@@ -1782,8 +1784,28 @@ class BarBellApp(tk.Tk):
         return win
 
     def _show_help(self):
-        # No help content exists yet - placeholder to be filled in later.
-        self._show_placeholder_screen("Help", "Help content will be added here.")
+        """Opens the BarBell Operator Guide in the web browser (the address is
+        src/help_link.py's HELP_URL, or Settings.help_url if set). If no browser
+        can be opened, says where the guide is instead - and copies the address
+        to the clipboard so it can be pasted into one."""
+        url = resolve_help_url(self.settings.help_url)
+        try:
+            opened = webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - no browser registered, locked-down PC, etc.
+            opened = False
+        if opened:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(url)
+            copied = "\n\n(The address has been copied - paste it into a web browser.)"
+        except tk.TclError:
+            copied = ""
+        messagebox.showinfo(
+            "Help",
+            f"BarBell couldn't open a web browser. The Operator Guide is at:\n\n{url}{copied}",
+            parent=self,
+        )
 
     def _show_contacts(self):
         # Contact details to be supplied - placeholder for now.

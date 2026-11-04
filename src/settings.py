@@ -68,6 +68,9 @@ class Settings:
     # corrupt them). backup_keep_count is how many rolling backups to keep.
     backup_dir: str = ""
     backup_keep_count: int = 10
+    # Optional per-machine override for where Help > Help goes (an http/https
+    # address). Empty = the built-in address in src/help_link.py.
+    help_url: str = ""
     demo_audit_log_file: str = "demo_gtin_audit_log.jsonl"
     # Which plant's Label Traxx to connect to - the Windows ODBC DSN name
     # (e.g. "LT64" for Barbados, "LCJ JAM" for Jamaica; both DSNs must already

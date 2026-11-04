@@ -3,6 +3,15 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.13 Beta - 2026-11-04
+
+- Help > Help now opens the BarBell Operator Guide in the PC's default web browser
+  (it was a placeholder window). The address lives in one place, `HELP_URL` in
+  `src/help_link.py`; a machine can point somewhere else with `help_url` in
+  `settings.json` (only http/https addresses are ever used - anything else is ignored).
+  If no browser can be opened, BarBell shows the address and copies it to the clipboard
+  instead. Contacts is still a placeholder.
+
 ## 1.1.12 Beta - 2026-11-04
 
 - Contents barcode AIs now follow the customer's rules. **Carton label:** (01) GTIN,

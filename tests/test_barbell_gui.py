@@ -1082,13 +1082,12 @@ class TestMenuBar:
     def test_main_form_no_longer_has_an_about_button(self, app):
         assert "About" not in _all_button_texts(app)
 
-    def test_help_and_contacts_open_their_own_screens(self, app):
-        for label in ("Help", "Contacts"):
-            before = set(app.winfo_children())
-            _invoke_menu(_help_menu(app), label)
-            new = next(iter(set(app.winfo_children()) - before))
-            assert new.title() == label
-            new.destroy()
+    def test_contacts_opens_its_own_screen(self, app):
+        before = set(app.winfo_children())
+        _invoke_menu(_help_menu(app), "Contacts")
+        new = next(iter(set(app.winfo_children()) - before))
+        assert new.title() == "Contacts"
+        new.destroy()
 
     def test_about_menu_item_opens_the_existing_about_screen(self, app):
         before = set(app.winfo_children())
@@ -1555,3 +1554,69 @@ class TestCartonContentsAIs:
         contents_line = next(line for line in seen[0].splitlines() if "Contents:" in line)
         assert "(01)00099999000016(11)260505(37)27000(10)" in contents_line
         assert "(02)" not in contents_line
+
+
+class TestHelpOpensTheGuide:
+    """Help > Help opens the BarBell Operator Guide in the web browser."""
+
+    def test_help_opens_the_built_in_guide_address(self, app, monkeypatch):
+        from src.help_link import HELP_URL
+
+        opened = []
+        monkeypatch.setattr("barbell_gui.webbrowser.open", lambda url, *a, **k: (opened.append(url), True)[1])
+        monkeypatch.setattr(app.settings, "help_url", "")
+        windows_before = set(app.winfo_children())
+
+        _invoke_menu(_help_menu(app), "Help")
+
+        assert opened == [HELP_URL]
+        assert set(app.winfo_children()) == windows_before  # no placeholder window any more
+
+    def test_a_machine_can_point_help_somewhere_else(self, app, monkeypatch):
+        opened = []
+        monkeypatch.setattr("barbell_gui.webbrowser.open", lambda url, *a, **k: (opened.append(url), True)[1])
+        monkeypatch.setattr(app.settings, "help_url", "https://intranet.example/barbell-guide")
+
+        _invoke_menu(_help_menu(app), "Help")
+
+        assert opened == ["https://intranet.example/barbell-guide"]
+
+    def test_an_unsafe_override_is_ignored(self, app, monkeypatch):
+        from src.help_link import HELP_URL
+
+        opened = []
+        monkeypatch.setattr("barbell_gui.webbrowser.open", lambda url, *a, **k: (opened.append(url), True)[1])
+        monkeypatch.setattr(app.settings, "help_url", "file:///C:/Windows/System32/calc.exe")
+
+        _invoke_menu(_help_menu(app), "Help")
+
+        assert opened == [HELP_URL]
+
+    @pytest.mark.parametrize("failure", ["returns_false", "raises"])
+    def test_if_no_browser_opens_the_address_is_shown_and_copied(self, app, monkeypatch, failure):
+        from src.help_link import HELP_URL
+
+        def fake_open(url, *a, **k):
+            if failure == "raises":
+                raise OSError("no browser")
+            return False
+
+        monkeypatch.setattr("barbell_gui.webbrowser.open", fake_open)
+        monkeypatch.setattr(app.settings, "help_url", "")
+        shown = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: shown.append((title, msg)))
+
+        _invoke_menu(_help_menu(app), "Help")
+
+        assert len(shown) == 1 and shown[0][0] == "Help"
+        assert HELP_URL in shown[0][1] and "couldn't open a web browser" in shown[0][1]
+        assert app.clipboard_get() == HELP_URL
+
+    def test_a_working_browser_shows_no_message(self, app, monkeypatch):
+        monkeypatch.setattr("barbell_gui.webbrowser.open", lambda *a, **k: True)
+        shown = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: shown.append(msg))
+
+        _invoke_menu(_help_menu(app), "Help")
+
+        assert shown == []
