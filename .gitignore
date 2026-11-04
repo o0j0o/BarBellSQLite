@@ -15,3 +15,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+installer/build/
+installer/build_paths.inc
+installer/Output/

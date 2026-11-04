@@ -51,6 +51,9 @@ BACKUP_NAME_RE = re.compile(r"^barbell_backup_\d{8}_\d{6}(?:_[a-z-]+)?(?:_\d+)?$
 REASON_EXIT = "exit"
 REASON_MANUAL = "manual"
 REASON_PRE_RESTORE = "pre-restore"
+REASON_PRE_INSTALL = "pre-install"  # taken by the installer before it changes anything
+# Safety backups: named with their reason, never counted against the rolling limit and never pruned.
+_KEEP_FOREVER = (REASON_PRE_RESTORE, REASON_PRE_INSTALL)
 
 # role -> file name inside the backup folder
 ROLE_DB = "database"
@@ -226,7 +229,7 @@ def list_backups(dest_root: Path | str) -> list[Path]:
 def _prune(dest_root: Path, keep: int) -> list[Path]:
     """Deletes the oldest regular (not pre-restore) backups beyond `keep`."""
     keep = max(1, int(keep))
-    regular = [p for p in list_backups(dest_root) if _read_manifest(p).get("reason") != REASON_PRE_RESTORE]
+    regular = [p for p in list_backups(dest_root) if _read_manifest(p).get("reason") not in _KEEP_FOREVER]
     removed = []
     for old in regular[: max(0, len(regular) - keep)]:
         try:
@@ -278,7 +281,7 @@ def create_backup(
         raise BackupError(f"Can't use the backup folder {dest_root}: {exc}") from exc
 
     stamp = now.strftime("%Y%m%d_%H%M%S")
-    suffix = f"_{reason}" if reason == REASON_PRE_RESTORE else ""
+    suffix = f"_{reason}" if reason in _KEEP_FOREVER else ""
     final = dest_root / f"barbell_backup_{stamp}{suffix}"
     n = 1
     while final.exists():
@@ -325,7 +328,7 @@ def create_backup(
         shutil.rmtree(final, ignore_errors=True)
         raise
 
-    removed = _prune(dest_root, getattr(settings, "backup_keep_count", 10)) if reason != REASON_PRE_RESTORE else []
+    removed = _prune(dest_root, getattr(settings, "backup_keep_count", 10)) if reason not in _KEEP_FOREVER else []
     note = f" ({len(removed)} older backup(s) removed)" if removed else ""
     return BackupResult(final, False, f"Backed up to {final}{note}")
 

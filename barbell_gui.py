@@ -24,7 +24,6 @@ import winsound
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
-from dotenv import load_dotenv
 from PIL import Image, ImageTk
 
 from src.backup import BackupError, REASON_EXIT, REASON_MANUAL, create_backup
@@ -62,8 +61,9 @@ from src.labels import (
 from src.help_link import resolve_help_url
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
-from src.settings import load_settings
+from src.settings import DEFAULT_SETTINGS_FILE, load_settings
 from src.setup_access import ADMIN_WELCOME_MESSAGE, SetupAccessLevel, resolve_setup_access
+from src import paths
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
 from src.version import BUILD_DATE, version_string
 
@@ -1701,10 +1701,14 @@ class BarBellApp(tk.Tk):
         if access_level is SetupAccessLevel.Admin:
             messagebox.showinfo("Setup", ADMIN_WELCOME_MESSAGE, parent=self)
 
-        subprocess.Popen(
-            [sys.executable, str(APP_ROOT / "setup_gui.py"), "--access-level", access_level.value],
-            cwd=str(APP_ROOT),
-        )
+        if paths.is_frozen():
+            # Installed .exe: there is no setup_gui.py to run, so BarBell.exe starts itself in Setup mode.
+            command = [sys.executable, "--setup", "--access-level", access_level.value]
+            working_dir = str(paths.data_dir())
+        else:
+            command = [sys.executable, str(APP_ROOT / "setup_gui.py"), "--access-level", access_level.value]
+            working_dir = str(APP_ROOT)
+        subprocess.Popen(command, cwd=working_dir)
 
     # --- menu bar -------------------------------------------------------
 
@@ -1812,6 +1816,82 @@ class BarBellApp(tk.Tk):
         self._show_placeholder_screen("Contacts", "Contact details will be added here.")
 
 
+APP_MUTEX_NAME = "BarBellAppMutex"  # the installer's AppMutex: it asks to close BarBell before upgrading
+
+
+def _hold_app_mutex():
+    """Names this running copy so the installer/uninstaller can tell BarBell is
+    open (and ask for it to be closed) instead of failing on locked files.
+    Returns the handle; keep it referenced for the life of the program."""
+    try:
+        import ctypes
+
+        return ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX_NAME)
+    except Exception:  # noqa: BLE001 - not Windows / no ctypes: harmless, just no installer prompt
+        return None
+
+
+def main(argv=None) -> int:
+    """
+    Command line (the installed BarBell.exe uses the same entry point):
+        (nothing)                 run BarBell
+        --setup [--access-level]  run Setup instead (how the main window launches it when installed)
+        --version                 print the version and exit
+        --selftest FILE           start the app for a moment, write what it found to FILE (JSON), exit -
+                                  how the installer's tests prove an installed copy really starts
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(prog="BarBell")
+    parser.add_argument("--setup", action="store_true")
+    parser.add_argument(
+        "--access-level", choices=[level.value for level in SetupAccessLevel],
+        default=SetupAccessLevel.Standard.value,
+    )
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--selftest", metavar="FILE")
+    args = parser.parse_args(argv)
+
+    if args.version:
+        print(version_string())
+        return 0
+
+    paths.enter_data_dir()  # installed: work inside the data folder (no-op from source)
+    paths.load_env()
+
+    if args.setup:
+        import setup_gui
+
+        setup_gui.run(SetupAccessLevel(args.access_level))
+        return 0
+
+    mutex = _hold_app_mutex()  # noqa: F841 - kept alive on purpose
+    app = BarBellApp()
+    if args.selftest:
+        def report_and_quit():
+            info = {
+                "title": app.title(),
+                "version": version_string(),
+                "frozen": paths.is_frozen(),
+                "install_dir": str(paths.install_dir()),
+                "data_dir": str(paths.data_dir()),
+                "cwd": os.getcwd(),
+                "settings_file": str(DEFAULT_SETTINGS_FILE),
+                "menu": [app._menubar.entrycget(i, "label") for i in range(app._menubar.index("end") + 1)],
+                "logos_loaded": all(
+                    getattr(app, name) is not None
+                    for name in ("_header_barbell_logo", "_header_making_ideas_logo", "_about_clc_logo", "_about_lcj_logo")
+                ),
+            }
+            with open(args.selftest, "w", encoding="utf-8") as f:
+                json.dump(info, f)
+            app.destroy()
+
+        app.after(400, report_and_quit)
+    app.mainloop()
+    return 0
+
+
 if __name__ == "__main__":
-    load_dotenv()
-    BarBellApp().mainloop()
+    sys.exit(main())

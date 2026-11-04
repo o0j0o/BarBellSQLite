@@ -20,7 +20,7 @@ import os
 import re
 
 import pyodbc
-from dotenv import load_dotenv
+from src.paths import load_env
 
 # ODBC constants (avoids depending on pyodbc exposing them by name).
 SQL_ATTR_ACCESS_MODE = 101
@@ -84,7 +84,7 @@ class ReadOnlyConnection:
     unset. See src/settings.py."""
 
     def __init__(self, dsn=None, user=None, password=None, timeout=30):
-        load_dotenv()
+        load_env()  # the Label Traxx login: .env in the data folder when installed
         self._dsn = dsn or os.environ["LT_DSN"]
         self._user = user or os.environ["LT_USER"]
         self._password = password if password is not None else os.environ["LT_PASSWORD"]
