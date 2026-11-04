@@ -3,6 +3,15 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.8 Beta - 2026-11-04
+
+- Main screen: the CLC and LCJ logos are removed from the header, leaving only the
+  "Making Ideas Take Shape!" logo (same size, right edge). The About screen now shows
+  the LCJ logo beside the CLC logo.
+- Menu bar: the top-level items are now **Home** (Setup, Exit) and **Help** (Help,
+  Contacts, About). Setup and Exit behave exactly as before - they just moved under
+  Home.
+
 ## 1.1.7 Beta - 2026-11-04
 
 - Menu bar across the top of the main form: **Setup**, **Exit**, **Help** (Help,

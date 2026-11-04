@@ -1052,8 +1052,12 @@ def _invoke_menu(menu, label):
     raise AssertionError(f"no menu entry {label!r} in {_menu_labels(menu)}")
 
 
+def _home_menu(app):
+    return app.nametowidget(app._menubar.entrycget(0, "menu"))
+
+
 def _help_menu(app):
-    return app.nametowidget(app._menubar.entrycget(2, "menu"))
+    return app.nametowidget(app._menubar.entrycget(1, "menu"))
 
 
 def _all_button_texts(widget):
@@ -1066,8 +1070,11 @@ def _all_button_texts(widget):
 
 
 class TestMenuBar:
-    def test_top_level_items_are_setup_exit_help_in_that_order(self, app):
-        assert _menu_labels(app._menubar) == ["Setup", "Exit", "Help"]
+    def test_top_level_items_are_home_then_help(self, app):
+        assert _menu_labels(app._menubar) == ["Home", "Help"]
+
+    def test_home_menu_holds_setup_and_exit(self, app):
+        assert _menu_labels(_home_menu(app)) == ["Setup", "Exit"]
 
     def test_help_menu_has_help_contacts_about(self, app):
         assert _menu_labels(_help_menu(app)) == ["Help", "Contacts", "About"]
@@ -1100,7 +1107,7 @@ class TestExitMenu:
         )
         monkeypatch.setattr(app, "destroy", lambda: closed.append(True))
 
-        _invoke_menu(app._menubar, "Exit")
+        _invoke_menu(_home_menu(app), "Exit")
 
         assert asked == ["Are you sure you want to exit BarBell?"]
         assert closed == [True]
@@ -1112,7 +1119,7 @@ class TestExitMenu:
         windows_before = set(app.winfo_children())
         job_before = app.job_number_var.get()
 
-        _invoke_menu(app._menubar, "Exit")
+        _invoke_menu(_home_menu(app), "Exit")
 
         assert closed == []
         assert set(app.winfo_children()) == windows_before
@@ -1136,7 +1143,7 @@ class TestSetupEntryAndPasswords:
         return popen_calls, infos, errors
 
     def _via_menu(self, app):
-        _invoke_menu(app._menubar, "Setup")
+        _invoke_menu(_home_menu(app), "Setup")
 
     def _via_about_button(self, app):
         before = set(app.winfo_children())
@@ -1288,55 +1295,92 @@ class TestProductionDateEntry:
 
 
 class TestHeaderLogos:
-    def test_all_three_logos_load(self, app):
-        assert app._header_lcj_logo is not None
-        assert app._header_clc_logo is not None
-        assert app._header_making_ideas_logo is not None
+    """The main screen's header shows ONLY the "Making Ideas Take Shape!"
+    wordmark - the CLC and LCJ logos now live on the About screen."""
 
-    def test_logos_keep_their_aspect_ratio_and_fit_the_existing_header_height(self, app):
+    def test_only_the_making_ideas_logo_is_in_the_header(self, app):
+        assert app._header_making_ideas_logo is not None
+        assert set(app._header_logo_widgets) == {"center", "making_ideas"}
+        assert not hasattr(app, "_header_clc_logo") and not hasattr(app, "_header_lcj_logo")
+
+    def test_tagline_keeps_its_aspect_ratio_and_fits_the_existing_header_height(self, app):
         from PIL import Image
 
         import barbell_gui as g
 
-        cases = [
-            (g.LCJ_LOGO_PATH, app._header_lcj_logo),
-            (g.CLC_LOGO_PATH, app._header_clc_logo),
-            (g.MAKING_IDEAS_LOGO_PATH, app._header_making_ideas_logo),
-        ]
-        for path, photo in cases:
-            with Image.open(path) as source:
-                source_ratio = source.width / source.height
-            assert abs(photo.width() / photo.height() - source_ratio) / source_ratio < 0.02, path.name
-            assert photo.height() <= max(g.HEADER_LOGO_ROW_HEIGHT_PX, g.HEADER_MAKING_IDEAS_HEIGHT_PX)
+        photo = app._header_making_ideas_logo
+        with Image.open(g.MAKING_IDEAS_LOGO_PATH) as source:
+            source_ratio = source.width / source.height
+        assert abs(photo.width() / photo.height() - source_ratio) / source_ratio < 0.02
+        assert photo.height() == g.HEADER_MAKING_IDEAS_HEIGHT_PX <= g.HEADER_BARBELL_HEIGHT_PX
 
-        stack_height = g.HEADER_LOGO_ROW_HEIGHT_PX + g.HEADER_LOGO_GAP_PX + g.HEADER_MAKING_IDEAS_HEIGHT_PX
-        assert stack_height <= g.HEADER_BARBELL_HEIGHT_PX  # the header does not need to grow
-
-    def test_layout_lcj_left_of_clc_in_line_and_tagline_centred_under_clc(self, app):
+    def test_tagline_sits_at_the_right_inside_the_header_clear_of_the_barbell_logo(self, app):
         app.update()
-        w = app._header_logo_widgets
-        lcj, clc, tag = w["lcj"], w["clc"], w["making_ideas"]
+        tag = app._header_logo_widgets["making_ideas"]
+        center = app._header_logo_widgets["center"]
+        header = tag.master
 
-        assert lcj.winfo_x() + lcj.winfo_width() <= clc.winfo_x()  # LCJ on the left of CLC
-        assert abs((lcj.winfo_y() + lcj.winfo_height() / 2) - (clc.winfo_y() + clc.winfo_height() / 2)) <= 1  # in line
-        assert tag.winfo_y() >= clc.winfo_y() + clc.winfo_height()  # tagline below CLC
-        clc_centre = clc.winfo_x() + clc.winfo_width() / 2
-        tag_centre = tag.winfo_x() + tag.winfo_width() / 2
-        assert abs(clc_centre - tag_centre) <= 1  # directly under CLC
+        assert tag.winfo_y() >= 0 and tag.winfo_y() + tag.winfo_height() <= header.winfo_height()
+        assert tag.winfo_x() > center.winfo_x() + center.winfo_width()  # no overlap with BarBell logo
+        assert abs((tag.winfo_x() + tag.winfo_width()) - header.winfo_width()) <= 12  # at the right edge
 
-    def test_gaps_are_even_and_the_block_stays_inside_the_header_clear_of_the_barbell_logo(self, app):
+    def test_no_company_logos_remain_on_the_main_screen(self, app):
+        images = set()
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() == "Toplevel":
+                    continue
+                try:
+                    name = str(child.cget("image"))
+                except Exception:  # noqa: BLE001 - not every widget has an image option
+                    name = ""
+                if name:
+                    images.add(name)
+                walk(child)
+
+        walk(app)
+        # BarBell wordmark + tagline only
+        assert len(images) == 2
+
+
+class TestAboutScreenLogos:
+    def test_about_shows_both_company_logos_side_by_side(self, app):
+        app.update()
+        before = set(app.winfo_children())
+        app._show_about()
+        about = next(iter(set(app.winfo_children()) - before))
+        about.update()
+
+        assert app._about_lcj_logo is not None and app._about_clc_logo is not None
+        def image_name(label):  # ttk labels report their image as a 1-tuple
+            value = label.cget("image")
+            return str(value[0]) if isinstance(value, tuple) and value else str(value)
+
+        photo_names = {str(app._about_clc_logo), str(app._about_lcj_logo)}
+        labels = []
+
+        def collect(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() == "TLabel" and image_name(child) in photo_names:
+                    labels.append(child)
+                collect(child)
+
+        collect(about)
+        assert len(labels) == 2
+        clc = next(l for l in labels if image_name(l) == str(app._about_clc_logo))
+        lcj = next(l for l in labels if image_name(l) == str(app._about_lcj_logo))
+        assert clc.winfo_x() + clc.winfo_width() <= lcj.winfo_x()  # CLC then LCJ, in one row
+        assert abs(clc.winfo_y() - lcj.winfo_y()) <= 12
+        about.destroy()
+
+    def test_lcj_logo_on_about_keeps_its_aspect_ratio(self, app):
+        from PIL import Image
+
         import barbell_gui as g
 
-        app.update()
-        w = app._header_logo_widgets
-        lcj, clc, tag, block, center = w["lcj"], w["clc"], w["making_ideas"], w["block"], w["center"]
-
-        horizontal_gap = clc.winfo_x() - (lcj.winfo_x() + lcj.winfo_width())
-        vertical_gap = tag.winfo_y() - (clc.winfo_y() + clc.winfo_height())
-        assert horizontal_gap == vertical_gap == g.HEADER_LOGO_GAP_PX
-
-        assert block.winfo_height() <= g.HEADER_BARBELL_HEIGHT_PX
-        header = block.master
-        assert block.winfo_y() >= 0 and block.winfo_y() + block.winfo_height() <= header.winfo_height()
-        center_right = center.winfo_x() + center.winfo_width()
-        assert block.winfo_x() > center_right  # no overlap with the centred BarBell logo
+        with Image.open(g.LCJ_LOGO_PATH) as source:
+            source_ratio = source.width / source.height
+        photo = app._about_lcj_logo
+        assert abs(photo.width() / photo.height() - source_ratio) / source_ratio < 0.02
+        assert photo.width() <= g.ABOUT_LCJ_TARGET_PX

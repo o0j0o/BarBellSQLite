@@ -73,19 +73,14 @@ LCJ_LOGO_PATH = APP_ROOT / "assets" / "lcj_logo.png"  # Label Crafts Jamaica Ltd
 MAKING_IDEAS_LOGO_PATH = APP_ROOT / "assets" / "making_ideas_logo.png"  # "Making Ideas Take Shape!" wordmark
 
 HEADER_BARBELL_HEIGHT_PX = 88  # main-screen BarBell logo at 200% (of the original 44px baseline)
-# The company logos share the header's right-hand area, inside the header's
-# existing height (HEADER_BARBELL_HEIGHT_PX, set by the centred BarBell logo):
-# LCJ and CLC side by side on top, "Making Ideas Take Shape!" directly under
-# CLC. Total = row + gap + tagline = 82px, inside the 88px the header already
-# has, so it doesn't grow. The gap is the same between LCJ and CLC
-# (horizontal) as between CLC and the tagline (vertical), for even spacing.
-# The tagline is a stacked wordmark, so it gets more height than the one-line
-# company logos to stay legible.
-HEADER_LOGO_ROW_HEIGHT_PX = 30  # LCJ and CLC, same height so they line up
+# The main screen's header shows only the "Making Ideas Take Shape!" wordmark
+# at its right edge (the CLC and LCJ company logos live on the About screen).
+# 44px keeps the stacked wordmark legible and sits well inside the 88px the
+# header already has, so the header doesn't grow.
 HEADER_MAKING_IDEAS_HEIGHT_PX = 44
-HEADER_LOGO_GAP_PX = 8
 ABOUT_BARBELL_TARGET_PX = 200
 ABOUT_CLC_TARGET_PX = ABOUT_BARBELL_TARGET_PX // 2  # CLC shown at ~50% of the BarBell logo's size
+ABOUT_LCJ_TARGET_PX = ABOUT_CLC_TARGET_PX  # LCJ sits beside CLC, same width
 
 APP_DESCRIPTION = (
     "BarBell pulls job, packing slip, and item data from Label Traxx and combines it\n"
@@ -139,6 +134,22 @@ def load_header_logo(path: Path, target_height_px: int) -> ImageTk.PhotoImage | 
     return ImageTk.PhotoImage(image)
 
 
+def load_logo_to_width(path: Path, target_width_px: int) -> ImageTk.PhotoImage | None:
+    """Like load_header_logo(), but scaled to a target WIDTH (never upscaled) -
+    for the About screen, where logos are sized by width to sit side by side."""
+    if not path.exists():
+        return None
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+    except OSError:
+        return None
+    if image.width > target_width_px:
+        height = max(1, round(image.height * target_width_px / image.width))
+        image = image.resize((target_width_px, height), Image.LANCZOS)
+    return ImageTk.PhotoImage(image)
+
+
 def load_scaled_or_none(path: Path, target_px: int, by_height: bool = False) -> tk.PhotoImage | None:
     """Best-effort load - returns None (not an error) if the asset isn't there yet."""
     if not path.exists():
@@ -160,12 +171,11 @@ class BarBellApp(tk.Tk):
         self.settings = load_settings()
         self._taskbar_icon = None
         self._header_barbell_logo = None
-        self._header_clc_logo = None
-        self._header_lcj_logo = None
         self._header_making_ideas_logo = None
         self._header_logo_widgets = {}  # the placed logo labels, for tests/layout checks
         self._about_barbell_logo = None
         self._about_clc_logo = None
+        self._about_lcj_logo = None
         self._slips = []
         self._selected_slip = None
         self._line_items = []
@@ -230,21 +240,19 @@ class BarBellApp(tk.Tk):
             self._header_barbell_logo = load_scaled_or_none(
                 ICON_PATH, HEADER_BARBELL_HEIGHT_PX, by_height=True
             )
-        # LCJ / CLC / "Making Ideas Take Shape!" sit together at the header's
-        # right edge, independent of the centered BarBell logo - see
-        # _build_widgets().
-        self._header_lcj_logo = load_header_logo(LCJ_LOGO_PATH, HEADER_LOGO_ROW_HEIGHT_PX)
-        self._header_clc_logo = load_header_logo(CLC_LOGO_PATH, HEADER_LOGO_ROW_HEIGHT_PX)
+        # "Making Ideas Take Shape!" sits at the header's right edge,
+        # independent of the centered BarBell logo - see _build_widgets().
         self._header_making_ideas_logo = load_header_logo(
             MAKING_IDEAS_LOGO_PATH, HEADER_MAKING_IDEAS_HEIGHT_PX
         )
 
-        # About dialog: BarBell logo large, CLC logo at ~50% of that size.
+        # About dialog: BarBell logo large, CLC and LCJ logos side by side at ~50% of that size.
         self._about_barbell_logo = load_scaled_or_none(BARBELL_LOGO_PATH, ABOUT_BARBELL_TARGET_PX)
         self._using_wordmark_about = self._about_barbell_logo is not None
         if self._about_barbell_logo is None:
             self._about_barbell_logo = load_scaled_or_none(ICON_PATH, ABOUT_BARBELL_TARGET_PX)
         self._about_clc_logo = load_scaled_or_none(CLC_LOGO_PATH, ABOUT_CLC_TARGET_PX)
+        self._about_lcj_logo = load_logo_to_width(LCJ_LOGO_PATH, ABOUT_LCJ_TARGET_PX)
 
     def _build_widgets(self):
         # Demo Mode banner - always created, shown/hidden by _apply_demo_mode_ui()
@@ -276,34 +284,18 @@ class BarBellApp(tk.Tk):
         if not self._using_wordmark:
             ttk.Label(center, text="BarBell", font=("", 16, "bold")).pack(side="left", padx=10)
 
-        if any((self._header_lcj_logo, self._header_clc_logo, self._header_making_ideas_logo)):
+        if self._header_making_ideas_logo is not None:
             # place(), not grid - pinned to the header's right edge, independent
-            # of the centered BarBell logo above. LCJ then CLC on one row, the
-            # tagline centred directly under CLC (column 1).
-            logo_block = ttk.Frame(header)
-            logo_block.place(relx=1.0, rely=0.5, anchor="e")
-            # Plain tk.Labels with no border/padding (ttk.Label adds ~2px each
-            # side), so each label is exactly its image's size and the gaps
-            # below are exactly HEADER_LOGO_GAP_PX. Background matches the frame.
+            # of the centered BarBell logo above. A plain tk.Label with no
+            # border/padding (ttk.Label adds ~2px each side) and a background
+            # matching the frame, so the transparent wordmark blends in.
             logo_bg = ttk.Style(self).lookup("TFrame", "background") or self.cget("background")
-
-            def logo_label(image):
-                return tk.Label(
-                    logo_block, image=image, bd=0, highlightthickness=0, padx=0, pady=0, bg=logo_bg
-                )
-            if self._header_lcj_logo is not None:
-                lcj_label = logo_label(self._header_lcj_logo)
-                lcj_label.grid(row=0, column=0, padx=(0, HEADER_LOGO_GAP_PX))
-                self._header_logo_widgets["lcj"] = lcj_label
-            if self._header_clc_logo is not None:
-                clc_label = logo_label(self._header_clc_logo)
-                clc_label.grid(row=0, column=1)
-                self._header_logo_widgets["clc"] = clc_label
-            if self._header_making_ideas_logo is not None:
-                making_ideas_label = logo_label(self._header_making_ideas_logo)
-                making_ideas_label.grid(row=1, column=1, pady=(HEADER_LOGO_GAP_PX, 0))
-                self._header_logo_widgets["making_ideas"] = making_ideas_label
-            self._header_logo_widgets["block"] = logo_block
+            making_ideas_label = tk.Label(
+                header, image=self._header_making_ideas_logo,
+                bd=0, highlightthickness=0, padx=0, pady=0, bg=logo_bg,
+            )
+            making_ideas_label.place(relx=1.0, rely=0.5, anchor="e")
+            self._header_logo_widgets["making_ideas"] = making_ideas_label
 
         job_frame = ttk.LabelFrame(self, text="1. Job", padding=10)
         job_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
@@ -1654,8 +1646,13 @@ class BarBellApp(tk.Tk):
         if not self._using_wordmark_about:
             ttk.Label(frame, text="BarBell", font=("", 14, "bold")).pack()
 
-        if self._about_clc_logo is not None:
-            ttk.Label(frame, image=self._about_clc_logo).pack(pady=(0, 10))
+        if self._about_clc_logo is not None or self._about_lcj_logo is not None:
+            company_logos = ttk.Frame(frame)
+            company_logos.pack(pady=(0, 10))
+            if self._about_clc_logo is not None:
+                ttk.Label(company_logos, image=self._about_clc_logo).pack(side="left", padx=(0, 15))
+            if self._about_lcj_logo is not None:
+                ttk.Label(company_logos, image=self._about_lcj_logo).pack(side="left")
 
         ttk.Label(frame, text=APP_DESCRIPTION, justify="center").pack(pady=10)
         ttk.Label(frame, text="© 2026 Caribbean Label Crafts Ltd.").pack()
@@ -1697,12 +1694,14 @@ class BarBellApp(tk.Tk):
     # --- menu bar -------------------------------------------------------
 
     def _build_menu(self):
-        """Top menu bar: Setup, Exit, Help (Help, Contacts, About). About is
-        reached only from here now - the main form no longer has an About
-        button."""
+        """Top menu bar: Home (Setup, Exit) and Help (Help, Contacts, About).
+        About is reached only from here - the main form has no About button."""
         menubar = tk.Menu(self, tearoff=False)
-        menubar.add_command(label="Setup", command=self._prompt_setup_password)
-        menubar.add_command(label="Exit", command=self._confirm_exit)
+
+        home_menu = tk.Menu(menubar, tearoff=False)
+        home_menu.add_command(label="Setup", command=self._prompt_setup_password)
+        home_menu.add_command(label="Exit", command=self._confirm_exit)
+        menubar.add_cascade(label="Home", menu=home_menu)
 
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="Help", command=self._show_help)
