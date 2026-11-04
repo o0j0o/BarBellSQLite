@@ -3,6 +3,18 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.12 Beta - 2026-11-04
+
+- Contents barcode AIs now follow the customer's rules. **Carton label:** (01) GTIN,
+  (11) production date, (37) count in the carton, (10) batch. **Pallet label:** (02) GTIN,
+  (11) production date, (37) total count of product on the pallet (product, not cartons),
+  (10) batch - and a pallet label is only made for a pallet holding all the same product.
+  The main screen's Preview Barcode window and the Generate Labels confirmation box (and the
+  command-line preview) are about cartons, so they now show (01) and (37); they used to list
+  (02) and (37). The pallet screen's preview is unchanged. `src/gs1.py` takes the GTIN AI
+  as `gtin_ai` (`GTIN_AI_CARTON` "01" / `GTIN_AI_PALLET` "02", default "02"). The Pallet Report's
+  small per-carton contents barcodes still use the default (02) - not changed here.
+
 ## 1.1.11 Beta - 2026-11-04
 
 - Pallet Labels: the last scan message no longer stays on the screen after a pallet is

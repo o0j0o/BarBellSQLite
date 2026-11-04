@@ -1513,3 +1513,45 @@ class TestBackupOnExit:
 
         assert len(infos) == 1 and "Setup" in infos[0]
         assert not backups.exists()
+
+
+class TestCartonContentsAIs:
+    """The main screen's Preview and confirmation boxes are about CARTON
+    labels, so they show the carton form: (01) GTIN and (37) count - the same
+    as the printed carton label. (The pallet screen keeps (02)/(37).)"""
+
+    def _label_texts(self, widget):
+        texts = []
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TLabel", "Label"):
+                texts.append(str(child.cget("text")))
+            texts.extend(self._label_texts(child))
+        return texts
+
+    def test_preview_barcode_window_shows_ai_01_and_ai_37(self, app, tmp_path, monkeypatch):
+        TestProductionDateEntry()._prime(app, tmp_path, monkeypatch, "260505")
+        before = set(app.winfo_children())
+
+        app._preview_barcode()
+
+        window = next(iter(set(app.winfo_children()) - before))
+        texts = self._label_texts(window)
+        contents = [t for t in texts if t.startswith("(0") and "(37)" in t]
+        assert len(contents) == 1
+        assert contents[0].startswith("(01)00099999000016(11)260505(37)27000(10)")
+        assert not any(t.startswith("(02)") for t in texts)
+        window.destroy()
+
+    def test_generate_confirmation_box_shows_ai_01_and_ai_37(self, app, tmp_path, monkeypatch):
+        TestProductionDateEntry()._prime(app, tmp_path, monkeypatch, "260505")
+        seen = []
+        monkeypatch.setattr(
+            "tkinter.messagebox.askyesno", lambda title, message, **k: (seen.append(message), False)[1]
+        )  # look at the message, then decline so nothing is generated
+
+        app._generate()
+
+        assert len(seen) == 1
+        contents_line = next(line for line in seen[0].splitlines() if "Contents:" in line)
+        assert "(01)00099999000016(11)260505(37)27000(10)" in contents_line
+        assert "(02)" not in contents_line

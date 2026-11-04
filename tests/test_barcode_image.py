@@ -68,3 +68,26 @@ def test_decoded_bytes_show_fnc1_as_group_separator_before_batch():
     result = decode(image)
 
     assert result.bytes == b"020072105900063511260515375000\x1d10122984"
+
+
+def test_carton_contents_barcode_decodes_with_ai_01_and_ai_37():
+    from src.gs1 import GTIN_AI_CARTON
+
+    data = build_contents_barcode_data(
+        gtin="00636191205407", production_date="260505", quantity=12000, batch="12311841185",
+        gtin_ai=GTIN_AI_CARTON,
+    )
+    result = decode(render_barcode_image(data))
+
+    assert result.format.name == "Code128"
+    assert result.text == "(01)00636191205407(11)260505(37)12000(10)12311841185"
+    assert result.bytes == b"010063619120540711260505371200" + b"0\x1d10" + b"12311841185"
+
+
+def test_pallet_contents_barcode_still_decodes_with_ai_02_and_ai_37_total_count():
+    data = build_contents_barcode_data(
+        gtin="00636191205407", production_date="260505", quantity=60000, batch="12311841185"
+    )
+    result = decode(render_barcode_image(data))
+
+    assert result.text == "(02)00636191205407(11)260505(37)60000(10)12311841185"

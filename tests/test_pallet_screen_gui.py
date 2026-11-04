@@ -638,3 +638,40 @@ class TestCartonPicker:
         picker.update()
 
         assert list(tree.get_children()) == [self.SSCCS[1]]
+
+
+class TestPalletContentsAIs:
+    """Pallet label: (02) GTIN, and (37) is the TOTAL count of product on the
+    pallet - not the number of cartons."""
+
+    def test_pallet_preview_shows_ai_02_and_the_total_product_count(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(
+            db_path,
+            [
+                make_carton_row("008600157112000128", quantity=27000, package_index=1),
+                make_carton_row("008600157112000296", quantity=7000, package_index=2),
+            ],
+        )
+        _entries(win)[0].insert(0, "2")
+        win.update()
+        scan(win, "008600157112000128")
+        scan(win, "008600157112000296")
+        before = set(win.winfo_children())
+
+        _button(win, "Preview Barcode").invoke()
+
+        preview = next(iter(set(win.winfo_children()) - before))
+        texts = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() in ("TLabel", "Label"):
+                    texts.append(str(child.cget("text")))
+                walk(child)
+
+        walk(preview)
+        line = next(t for t in texts if t.startswith("(0") and "(37)" in t)
+        assert line.startswith("(02)00051096184921(11)260323(37)34000(10)")  # 27,000 + 7,000 product, not "2" cartons
+        assert "(37)2(10)" not in line
+        preview.destroy()

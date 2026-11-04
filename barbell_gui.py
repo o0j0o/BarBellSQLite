@@ -45,6 +45,7 @@ from src.db.local_store import (
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import (
+    GTIN_AI_CARTON,
     build_contents_barcode_data,
     build_contents_element_string,
     build_sscc_barcode_data,
@@ -609,8 +610,11 @@ class BarBellApp(tk.Tk):
         if info is None:
             return
 
+        # Carton label: the GTIN is AI (01) - see src/gs1.py. The pallet screen's
+        # own preview (further down) uses the pallet form, AI (02).
         contents_data = build_contents_barcode_data(
-            info["gtin"], info["production_date"], info["first_package_qty"], info["batch"]
+            info["gtin"], info["production_date"], info["first_package_qty"], info["batch"],
+            gtin_ai=GTIN_AI_CARTON,
         )
         sscc_data = build_sscc_barcode_data(info["preview_sscc"])
 
@@ -622,7 +626,8 @@ class BarBellApp(tk.Tk):
 
         for label, ai_text, data in (
             ("Contents", build_contents_element_string(
-                info["gtin"], info["production_date"], info["first_package_qty"], info["batch"]
+                info["gtin"], info["production_date"], info["first_package_qty"], info["batch"],
+                gtin_ai=GTIN_AI_CARTON,
             ), contents_data),
             ("SSCC", build_sscc_element_string(info["preview_sscc"]), sscc_data),
         ):
@@ -666,7 +671,7 @@ class BarBellApp(tk.Tk):
 
         preview_text = (
             f"GS1-128 element strings for package 1:\n"
-            f"  Contents: {build_contents_element_string(info['gtin'], production_date, info['first_package_qty'], info['batch'])}\n"
+            f"  Contents: {build_contents_element_string(info['gtin'], production_date, info['first_package_qty'], info['batch'], gtin_ai=GTIN_AI_CARTON)}\n"
             f"  SSCC:     {build_sscc_element_string(info['preview_sscc'])}\n\n"
         )
 
