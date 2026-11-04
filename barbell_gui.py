@@ -1601,6 +1601,10 @@ class BarBellApp(tk.Tk):
             )
             scanned_cartons.clear()
             expected_count_var.set("")
+            # The last scan message (often a red error from an earlier mis-scan)
+            # belongs to the pallet that's now finished - don't leave it showing
+            # on the fresh, empty screen.
+            scan_feedback_label.config(text="")
             refresh_grid_and_totals()
 
         # --- window-level buttons / close -------------------------------

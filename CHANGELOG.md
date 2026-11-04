@@ -3,6 +3,13 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.11 Beta - 2026-11-04
+
+- Pallet Labels: the last scan message no longer stays on the screen after a pallet is
+  generated. Previously a red message from an earlier mis-scan (for example "That is the
+  contents barcode...") was still showing on the fresh, empty screen. It is cleared when
+  the pallet is successfully generated; backing out of the confirmation leaves it as is.
+
 ## 1.1.10 Beta - 2026-11-04
 
 - Setup form: the form now scrolls (scrollbar on the right, mouse wheel works), so the

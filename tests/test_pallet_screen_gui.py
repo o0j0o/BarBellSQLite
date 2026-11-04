@@ -418,6 +418,54 @@ class TestGenerate:
         assert len(errors) == 1
 
 
+class TestScanMessageAfterGenerate:
+    """The scan feedback line (green "added" / red error) must not outlive
+    the pallet it was about: after a successful Generate the screen is fresh
+    and empty, so the old message goes too."""
+
+    CONTENTS_BARCODE = "(02)00051096184921(11)260323(37)10000(10)12298447388"
+    CONTENTS_MESSAGE = "That is the contents barcode. Scan the lower SSCC barcode."
+
+    def _label_texts(self, widget):
+        texts = []
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TLabel", "Label"):
+                texts.append(str(child.cget("text")))
+            texts.extend(self._label_texts(child))
+        return texts
+
+    def _scan_then_misscan(self, win, db_path):
+        seed_cartons(db_path, [make_carton_row("008600157112000128")])
+        _entries(win)[0].insert(0, "1")
+        win.update()
+        scan(win, "008600157112000128")
+        scan(win, self.CONTENTS_BARCODE)  # the common mis-scan -> red message
+        assert self.CONTENTS_MESSAGE in self._label_texts(win)
+
+    def test_the_old_scan_message_is_cleared_once_the_pallet_is_generated(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+        self._scan_then_misscan(win, db_path)
+
+        _button(win, "Generate Pallet Label").invoke()
+        win.update()
+
+        texts = self._label_texts(win)
+        assert self.CONTENTS_MESSAGE not in texts
+        assert not any(t.endswith("added.") for t in texts)  # nor a stale green "added"
+
+    def test_the_message_stays_if_the_user_backs_out_of_generating(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)  # decline the confirmation
+        self._scan_then_misscan(win, db_path)
+
+        _button(win, "Generate Pallet Label").invoke()
+        win.update()
+
+        assert self.CONTENTS_MESSAGE in self._label_texts(win)  # nothing finished, nothing to clear
+
+
 class TestPreview:
     def test_preview_does_not_touch_the_sscc_counter_or_database(self, pallet_win, monkeypatch, tmp_path):
         win, db_path = pallet_win
