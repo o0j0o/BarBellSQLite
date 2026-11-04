@@ -17,12 +17,14 @@ Run with:
     python setup_gui.py
 """
 
+import argparse
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from src.settings import JAMAICA_LABEL_TRAXX_DSN, load_settings, save_settings
+from src.setup_access import SetupAccessLevel
 from src.sscc import (
     SSCCGenerator,
     archive_and_reset_state_file,
@@ -60,10 +62,16 @@ def validate_extension_digit(raw: str) -> str:
 
 
 class SetupGUI(tk.Tk):
-    def __init__(self):
+    def __init__(self, access_level: SetupAccessLevel = SetupAccessLevel.Standard):
         super().__init__()
         self.title("BarBell Setup")
         self.resizable(False, False)
+
+        # Which password got us here (the main window passes it on launch -
+        # see BarBellApp._prompt_setup_password). Both levels get identical
+        # Setup functionality today; admin-only features can branch on
+        # is_admin later. Running this file directly means Standard.
+        self.access_level = access_level
 
         self.settings = load_settings()
 
@@ -75,6 +83,10 @@ class SetupGUI(tk.Tk):
         self._build_buttons()
 
         self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
+
+    @property
+    def is_admin(self) -> bool:
+        return self.access_level is SetupAccessLevel.Admin
 
     # --- widget layout -----------------------------------------------------
 
@@ -201,6 +213,23 @@ class SetupGUI(tk.Tk):
             justify="left",
             font=("", 8),
         ).pack(anchor="w", pady=(4, 0))
+
+        self.disable_test_mode_var = tk.BooleanVar(value=self.settings.disable_test_mode_checkbox)
+        ttk.Checkbutton(
+            frame,
+            text="Disable Test Mode checkbox on main form",
+            variable=self.disable_test_mode_var,
+        ).pack(anchor="w", pady=(10, 0))
+        ttk.Label(
+            frame,
+            text=(
+                "When checked, the Test mode checkbox on the main form is turned off and\n"
+                "greyed out. Takes effect the next time BarBell is started. (Demo Mode still\n"
+                "forces Test mode on, so a demo can never issue a real SSCC.)"
+            ),
+            justify="left",
+            font=("", 8),
+        ).pack(anchor="w", pady=(2, 0))
 
     def _build_buttons(self):
         frame = ttk.Frame(self, padding=10)
@@ -395,6 +424,7 @@ class SetupGUI(tk.Tk):
             self.settings,
             output_dir=output_dir,
             demo_mode=self.demo_mode_var.get(),
+            disable_test_mode_checkbox=self.disable_test_mode_var.get(),
             label_traxx_dsn=label_traxx_dsn,
             **plant_gs1_fields,
         )
@@ -406,4 +436,11 @@ class SetupGUI(tk.Tk):
 
 
 if __name__ == "__main__":
-    SetupGUI().mainloop()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--access-level",
+        choices=[level.value for level in SetupAccessLevel],
+        default=SetupAccessLevel.Standard.value,
+    )
+    args = parser.parse_args()
+    SetupGUI(SetupAccessLevel(args.access_level)).mainloop()

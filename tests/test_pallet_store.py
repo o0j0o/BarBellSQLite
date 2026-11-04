@@ -20,7 +20,7 @@ def make_carton_rows(job_number="122984", ssccs=("086001571120000012", "08600157
             job_number=job_number, packing_slip_number="100495", customer_number="J00005",
             customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
             item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=10000,
-            batch="12298447388", production_date="2026-03-23", sscc=sscc,
+            batch="12298447388", production_date="260323", sscc=sscc,
             gtin="00051096184921", package_index=i, label_copy_index=1,
         )
         for i, sscc in enumerate(ssccs, start=1)
@@ -50,7 +50,7 @@ def test_find_carton_by_sscc_returns_full_info(tmp_path):
     assert carton.gtin == "00051096184921"
     assert carton.batch == "12298447388"
     assert carton.quantity == 10000
-    assert carton.production_date == "2026-03-23"
+    assert carton.production_date == "260323"
     assert carton.packing_slip_number == "100495"
     assert carton.status == "original"
     assert carton.pallet_sscc is None
@@ -70,7 +70,7 @@ def test_find_carton_by_sscc_never_returns_a_pallet_row(tmp_path):
     ssccs = seed(db_path)
     pallet = create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
     assert pallet  # sanity
@@ -86,7 +86,7 @@ def test_create_pallet_inserts_two_identical_rows_and_links_cartons(tmp_path):
 
     pallet_rows = create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
 
@@ -120,7 +120,7 @@ def test_create_pallet_links_every_print_copy_of_a_scanned_carton(tmp_path):
             job_number="122984", packing_slip_number="100495", customer_number="J00005",
             customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
             item_description="desc", quantity=10000, batch="12298447388",
-            production_date="2026-03-23", sscc="086001571120000012", gtin="00051096184921",
+            production_date="260323", sscc="086001571120000012", gtin="00051096184921",
             package_index=1, label_copy_index=copy,
         )
         for copy in (1, 2)
@@ -131,7 +131,7 @@ def test_create_pallet_links_every_print_copy_of_a_scanned_carton(tmp_path):
 
     create_pallet(
         carton_ssccs=["086001571120000012"], job_number="122984", quantity=10000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=1, db_path=db_path,
     )
 
@@ -143,7 +143,7 @@ def test_create_pallet_links_every_print_copy_of_a_scanned_carton(tmp_path):
 def test_create_pallet_rejects_empty_carton_list(tmp_path):
     with pytest.raises(ValueError, match="empty"):
         create_pallet(
-            carton_ssccs=[], job_number="122984", quantity=0, production_date="2026-03-23",
+            carton_ssccs=[], job_number="122984", quantity=0, production_date="260323",
             packing_slip_number="100495", pallet_sscc="086001571120099999", carton_count=0,
             db_path=tmp_path / "barbell.db",
         )
@@ -155,7 +155,7 @@ def test_create_pallet_rejects_unknown_job(tmp_path):
     with pytest.raises(ValueError, match="999999"):
         create_pallet(
             carton_ssccs=["086001571120000012"], job_number="999999", quantity=10000,
-            production_date="2026-03-23", packing_slip_number="100495",
+            production_date="260323", packing_slip_number="100495",
             pallet_sscc="086001571120099999", carton_count=1, db_path=db_path,
         )
 
@@ -167,7 +167,7 @@ def test_void_pallet_marks_pallet_void_and_frees_cartons(tmp_path):
     ssccs = seed(db_path)
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
 
@@ -194,14 +194,14 @@ def test_voided_pallet_cartons_can_be_scanned_onto_a_new_pallet(tmp_path):
     ssccs = seed(db_path)
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
     void_pallet("086001571120099999", db_path)
 
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120088888", carton_count=2, db_path=db_path,
     )
 
@@ -216,7 +216,7 @@ def test_sscc_search_finds_pallet_and_its_cartons(tmp_path):
     ssccs = seed(db_path)
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
 
@@ -299,7 +299,7 @@ def test_migration_adds_columns_to_an_old_database_without_losing_data(tmp_path)
     assert row.carton_count is None
     # backfilled from the jobs row, since this pre-existing row had no
     # per-row snapshot of its own
-    assert find_carton_by_sscc("086001571120000012", db_path).production_date == "2026-03-23"
+    assert find_carton_by_sscc("086001571120000012", db_path).production_date == "260323"
     assert find_carton_by_sscc("086001571120000012", db_path).packing_slip_number == "100495"
 
 
@@ -351,7 +351,7 @@ def test_count_pallets_counts_distinct_pallet_ssccs_not_print_copies(tmp_path):
 
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=20000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
     )
     assert count_pallets(db_path) == 1  # 2 rows (copies), 1 distinct pallet
@@ -370,7 +370,7 @@ def test_list_available_cartons_excludes_palletised_voided_and_other_mode(tmp_pa
     ssccs = list(seed(db_path, ssccs=("086001571120000012", "086001571120000029", "086001571120000036")))
     create_pallet(
         carton_ssccs=[ssccs[0]], job_number="122984", quantity=10000,
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc="086001571120099999", carton_count=1, db_path=db_path,
     )
 
@@ -407,3 +407,83 @@ def test_list_available_cartons_collapses_print_copies_and_applies_filters(tmp_p
     assert [c.sscc for c in list_available_cartons(
         db_path, False, exclude_ssccs=["086001571120000012"]
     )] == ["086001571120000029"]
+
+
+# --- production date: YYYY-MM-DD -> YYMMDD migration ---------------------------
+
+def test_legacy_iso_production_dates_are_converted_to_yymmdd_on_open(tmp_path):
+    db_path = tmp_path / "old_barbell.db"
+    _make_old_style_db(db_path)  # jobs.production_date is '2026-03-23'
+
+    history = fetch_label_history(db_path)
+    assert history[0].production_date == "260323"
+
+    conn = sqlite3.connect(str(db_path))
+    stored = {
+        "jobs": conn.execute("SELECT production_date FROM jobs").fetchone()[0],
+        "labels": conn.execute("SELECT production_date FROM labels").fetchone()[0],
+    }
+    conn.close()
+    assert stored == {"jobs": "260323", "labels": "260323"}
+
+
+def test_date_conversion_takes_one_backup_even_when_the_schema_migrates_too(tmp_path):
+    db_path = tmp_path / "old_barbell.db"
+    _make_old_style_db(db_path)
+    fetch_label_history(db_path)
+    assert len(list(tmp_path.glob("old_barbell.backup-*.db"))) == 1
+
+
+def test_date_conversion_on_a_current_schema_db_backs_up_once_then_never_again(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    seed(db_path)  # created with the current schema, then ...
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE jobs SET production_date = '2026-03-23'")  # ... put back the old date form
+    conn.execute("UPDATE labels SET production_date = '2026-03-23'")
+    conn.commit()
+    conn.close()
+
+    fetch_label_history(db_path)
+    fetch_label_history(db_path)
+    fetch_label_history(db_path)
+
+    assert len(list(tmp_path.glob("barbell.backup-*.db"))) == 1
+    assert find_carton_by_sscc("086001571120000012", db_path).production_date == "260323"
+
+
+def test_new_databases_need_no_date_conversion_or_backup(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    seed(db_path)
+    fetch_label_history(db_path)
+    assert list(tmp_path.glob("barbell.backup-*.db")) == []
+
+
+def test_history_date_filter_accepts_yymmdd_and_the_old_iso_form(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    seed(db_path)
+
+    assert len(fetch_label_history(db_path, date="260323")) == 2
+    assert len(fetch_label_history(db_path, date="2026-03-23")) == 2  # still understood
+    assert fetch_label_history(db_path, date="260324") == []
+    assert fetch_label_history(db_path, date="garbage") == []
+
+
+def test_writes_store_yymmdd_even_when_given_the_old_iso_form(tmp_path):
+    db_path = tmp_path / "barbell.db"
+    rows = make_carton_rows()
+    for r in rows:
+        r.production_date = "2026-03-23"
+    record_generation_run(rows, units_per_package=10000, labels_per_package=1, test_mode=False, db_path=db_path)
+    create_pallet(
+        carton_ssccs=[r.sscc for r in rows], job_number="122984", quantity=20000,
+        production_date="2026-03-24", packing_slip_number="100495",
+        pallet_sscc="086001571120099999", carton_count=2, db_path=db_path,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    per_row = dict(conn.execute("SELECT sscc, production_date FROM labels").fetchall())
+    job_date = conn.execute("SELECT production_date FROM jobs").fetchone()[0]
+    conn.close()
+    assert job_date == "260323"
+    assert per_row[rows[0].sscc] == "260323"
+    assert per_row["086001571120099999"] == "260324"  # the pallet row's own date

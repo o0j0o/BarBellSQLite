@@ -24,9 +24,11 @@ from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from dotenv import load_dotenv
+from PIL import Image, ImageTk
 
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
+from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
 from src.db.local_store import (
     count_pallets,
     create_pallet,
@@ -57,6 +59,7 @@ from src.labels import (
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import load_settings
+from src.setup_access import ADMIN_WELCOME_MESSAGE, SetupAccessLevel, resolve_setup_access
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
 from src.version import BUILD_DATE, version_string
 
@@ -66,8 +69,21 @@ APP_ICON_PATH = APP_ROOT / "assets" / "barbell_app_icon.png"  # rounded-square a
 BARBELL_LOGO_PATH = APP_ROOT / "assets" / "barbell_logo.png"  # full wordmark (icon + "BarBell" text)
 CLC_LOGO_PATH = APP_ROOT / "assets" / "clc_logo.png"  # Caribbean Label Crafts Ltd company logo
 
-HEADER_CLC_HEIGHT_PX = 22  # reduced to 50% of its original 44px per user request
+LCJ_LOGO_PATH = APP_ROOT / "assets" / "lcj_logo.png"  # Label Crafts Jamaica Ltd company logo
+MAKING_IDEAS_LOGO_PATH = APP_ROOT / "assets" / "making_ideas_logo.png"  # "Making Ideas Take Shape!" wordmark
+
 HEADER_BARBELL_HEIGHT_PX = 88  # main-screen BarBell logo at 200% (of the original 44px baseline)
+# The company logos share the header's right-hand area, inside the header's
+# existing height (HEADER_BARBELL_HEIGHT_PX, set by the centred BarBell logo):
+# LCJ and CLC side by side on top, "Making Ideas Take Shape!" directly under
+# CLC. Total = row + gap + tagline = 82px, inside the 88px the header already
+# has, so it doesn't grow. The gap is the same between LCJ and CLC
+# (horizontal) as between CLC and the tagline (vertical), for even spacing.
+# The tagline is a stacked wordmark, so it gets more height than the one-line
+# company logos to stay legible.
+HEADER_LOGO_ROW_HEIGHT_PX = 30  # LCJ and CLC, same height so they line up
+HEADER_MAKING_IDEAS_HEIGHT_PX = 44
+HEADER_LOGO_GAP_PX = 8
 ABOUT_BARBELL_TARGET_PX = 200
 ABOUT_CLC_TARGET_PX = ABOUT_BARBELL_TARGET_PX // 2  # CLC shown at ~50% of the BarBell logo's size
 
@@ -102,6 +118,27 @@ def scaled_photo_image_by_height(path: Path, target_height_px: int) -> tk.PhotoI
     return full.subsample(factor, factor)
 
 
+def load_header_logo(path: Path, target_height_px: int) -> ImageTk.PhotoImage | None:
+    """
+    A logo scaled to exactly target_height_px tall, keeping its aspect ratio,
+    with Lanczos resampling (so it stays sharp - unlike PhotoImage.subsample()'s
+    integer-factor, no-interpolation shrink, which can't hit an exact size).
+    Never upscales: a source already smaller than the target is used as-is.
+    Returns None (not an error) if the file is missing or unreadable.
+    """
+    if not path.exists():
+        return None
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+    except OSError:
+        return None
+    if image.height > target_height_px:
+        width = max(1, round(image.width * target_height_px / image.height))
+        image = image.resize((width, target_height_px), Image.LANCZOS)
+    return ImageTk.PhotoImage(image)
+
+
 def load_scaled_or_none(path: Path, target_px: int, by_height: bool = False) -> tk.PhotoImage | None:
     """Best-effort load - returns None (not an error) if the asset isn't there yet."""
     if not path.exists():
@@ -124,6 +161,9 @@ class BarBellApp(tk.Tk):
         self._taskbar_icon = None
         self._header_barbell_logo = None
         self._header_clc_logo = None
+        self._header_lcj_logo = None
+        self._header_making_ideas_logo = None
+        self._header_logo_widgets = {}  # the placed logo labels, for tests/layout checks
         self._about_barbell_logo = None
         self._about_clc_logo = None
         self._slips = []
@@ -133,6 +173,7 @@ class BarBellApp(tk.Tk):
         self._product = None
 
         self._load_logos()
+        self._build_menu()
         self._build_widgets()
         self._apply_demo_mode_ui()
 
@@ -164,7 +205,12 @@ class BarBellApp(tk.Tk):
             self.title(f"BarBell {version_string()}")
             self.demo_banner.grid_remove()
             self.demo_hint_label.config(text="")
-            self.test_mode_checkbox.config(state="normal")
+            if self.settings.disable_test_mode_checkbox:
+                # Setup's "Disable Test Mode checkbox on main form": off and greyed out.
+                self.test_mode_var.set(False)
+                self.test_mode_checkbox.config(state="disabled")
+            else:
+                self.test_mode_checkbox.config(state="normal")
 
     def _load_logos(self):
         # Taskbar icon stays the square icon-only mark, not the wordmark.
@@ -184,10 +230,13 @@ class BarBellApp(tk.Tk):
             self._header_barbell_logo = load_scaled_or_none(
                 ICON_PATH, HEADER_BARBELL_HEIGHT_PX, by_height=True
             )
-        # CLC logo is pinned to the header's right edge, independent of the
-        # centered BarBell logo - see _build_widgets().
-        self._header_clc_logo = load_scaled_or_none(
-            CLC_LOGO_PATH, HEADER_CLC_HEIGHT_PX, by_height=True
+        # LCJ / CLC / "Making Ideas Take Shape!" sit together at the header's
+        # right edge, independent of the centered BarBell logo - see
+        # _build_widgets().
+        self._header_lcj_logo = load_header_logo(LCJ_LOGO_PATH, HEADER_LOGO_ROW_HEIGHT_PX)
+        self._header_clc_logo = load_header_logo(CLC_LOGO_PATH, HEADER_LOGO_ROW_HEIGHT_PX)
+        self._header_making_ideas_logo = load_header_logo(
+            MAKING_IDEAS_LOGO_PATH, HEADER_MAKING_IDEAS_HEIGHT_PX
         )
 
         # About dialog: BarBell logo large, CLC logo at ~50% of that size.
@@ -221,15 +270,40 @@ class BarBellApp(tk.Tk):
 
         center = ttk.Frame(header)
         center.grid(row=0, column=1)
+        self._header_logo_widgets["center"] = center
         if self._header_barbell_logo is not None:
             ttk.Label(center, image=self._header_barbell_logo).pack(side="left")
         if not self._using_wordmark:
             ttk.Label(center, text="BarBell", font=("", 16, "bold")).pack(side="left", padx=10)
 
-        if self._header_clc_logo is not None:
+        if any((self._header_lcj_logo, self._header_clc_logo, self._header_making_ideas_logo)):
             # place(), not grid - pinned to the header's right edge, independent
-            # of the centered BarBell logo above.
-            ttk.Label(header, image=self._header_clc_logo).place(relx=1.0, rely=0.5, anchor="e")
+            # of the centered BarBell logo above. LCJ then CLC on one row, the
+            # tagline centred directly under CLC (column 1).
+            logo_block = ttk.Frame(header)
+            logo_block.place(relx=1.0, rely=0.5, anchor="e")
+            # Plain tk.Labels with no border/padding (ttk.Label adds ~2px each
+            # side), so each label is exactly its image's size and the gaps
+            # below are exactly HEADER_LOGO_GAP_PX. Background matches the frame.
+            logo_bg = ttk.Style(self).lookup("TFrame", "background") or self.cget("background")
+
+            def logo_label(image):
+                return tk.Label(
+                    logo_block, image=image, bd=0, highlightthickness=0, padx=0, pady=0, bg=logo_bg
+                )
+            if self._header_lcj_logo is not None:
+                lcj_label = logo_label(self._header_lcj_logo)
+                lcj_label.grid(row=0, column=0, padx=(0, HEADER_LOGO_GAP_PX))
+                self._header_logo_widgets["lcj"] = lcj_label
+            if self._header_clc_logo is not None:
+                clc_label = logo_label(self._header_clc_logo)
+                clc_label.grid(row=0, column=1)
+                self._header_logo_widgets["clc"] = clc_label
+            if self._header_making_ideas_logo is not None:
+                making_ideas_label = logo_label(self._header_making_ideas_logo)
+                making_ideas_label.grid(row=1, column=1, pady=(HEADER_LOGO_GAP_PX, 0))
+                self._header_logo_widgets["making_ideas"] = making_ideas_label
+            self._header_logo_widgets["block"] = logo_block
 
         job_frame = ttk.LabelFrame(self, text="1. Job", padding=10)
         job_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
@@ -284,7 +358,7 @@ class BarBellApp(tk.Tk):
             row=1, column=1, sticky="w", padx=5
         )
 
-        ttk.Label(pkg_frame, text="Production date (YYYY-MM-DD):").grid(row=2, column=0, sticky="w")
+        ttk.Label(pkg_frame, text=f"Production date ({PRODUCTION_DATE_FORMAT}, e.g. {PRODUCTION_DATE_EXAMPLE}):").grid(row=2, column=0, sticky="w")
         self.production_date_var = tk.StringVar()
         ttk.Entry(pkg_frame, textvariable=self.production_date_var, width=15).grid(
             row=2, column=1, sticky="w", padx=5
@@ -308,7 +382,6 @@ class BarBellApp(tk.Tk):
         ttk.Button(action_frame, text="Job/Label History...", command=self._show_history).pack(
             side="right", padx=(0, 8)
         )
-        ttk.Button(action_frame, text="About", command=self._show_about).pack(side="right")
 
     # --- job / packing slip / GTIN -------------------------------------
 
@@ -495,9 +568,13 @@ class BarBellApp(tk.Tk):
 
         production_date = self.production_date_var.get().strip()
         try:
-            datetime.date.fromisoformat(production_date)
+            parse_production_date(production_date)
         except ValueError:
-            messagebox.showerror("Invalid date", f"{production_date!r} isn't a valid YYYY-MM-DD date.")
+            messagebox.showerror(
+                "Invalid date",
+                f"{production_date!r} isn't a valid {PRODUCTION_DATE_FORMAT} date "
+                f"(for example {PRODUCTION_DATE_EXAMPLE} for 4 Nov 2026).",
+            )
             return None
 
         line_item = self._selected_line_item
@@ -703,7 +780,7 @@ class BarBellApp(tk.Tk):
         Browses BarBell's own local log of everything it has generated
         (src/db/local_store.py), joined from the Jobs and Labels tables -
         not Label Traxx. Filter by an exact Job No and/or production date
-        (YYYY-MM-DD); leave either blank to not filter on it.
+        (YYMMDD); leave either blank to not filter on it.
         """
         win = tk.Toplevel(self)
         win.title("Job/Label History")
@@ -720,7 +797,7 @@ class BarBellApp(tk.Tk):
         job_filter_var = tk.StringVar()
         ttk.Entry(filter_frame, textvariable=job_filter_var, width=12).pack(side="left", padx=(4, 12))
 
-        ttk.Label(filter_frame, text="Date (YYYY-MM-DD):").pack(side="left")
+        ttk.Label(filter_frame, text=f"Date ({PRODUCTION_DATE_FORMAT}):").pack(side="left")
         date_filter_var = tk.StringVar()
         ttk.Entry(filter_frame, textvariable=date_filter_var, width=11).pack(side="left", padx=(4, 12))
 
@@ -1589,6 +1666,14 @@ class BarBellApp(tk.Tk):
         ttk.Button(frame, text="Setup...", command=self._prompt_setup_password).pack()
 
     def _prompt_setup_password(self):
+        """
+        The one Setup entry point: the Setup menu and the About screen's
+        Setup button both call this, so they behave identically. Asks for
+        the password, works out which access level it grants (see
+        src/setup_access.py - the passwords themselves live only there) and
+        launches Setup told that level. Nothing typed is ever logged or put
+        in a message.
+        """
         entered = simpledialog.askstring(
             "Setup", "Enter the setup password:", show="*", parent=self
         )
@@ -1596,11 +1681,60 @@ class BarBellApp(tk.Tk):
             return
 
         settings = load_settings()  # reload in case it changed since app start
-        if not check_setup_password(entered, settings):
+        access_level = resolve_setup_access(entered, settings.setup_password)
+        if access_level is None:
             messagebox.showerror("Incorrect password", "That password is incorrect.")
             return
 
-        subprocess.Popen([sys.executable, str(APP_ROOT / "setup_gui.py")], cwd=str(APP_ROOT))
+        if access_level is SetupAccessLevel.Admin:
+            messagebox.showinfo("Setup", ADMIN_WELCOME_MESSAGE, parent=self)
+
+        subprocess.Popen(
+            [sys.executable, str(APP_ROOT / "setup_gui.py"), "--access-level", access_level.value],
+            cwd=str(APP_ROOT),
+        )
+
+    # --- menu bar -------------------------------------------------------
+
+    def _build_menu(self):
+        """Top menu bar: Setup, Exit, Help (Help, Contacts, About). About is
+        reached only from here now - the main form no longer has an About
+        button."""
+        menubar = tk.Menu(self, tearoff=False)
+        menubar.add_command(label="Setup", command=self._prompt_setup_password)
+        menubar.add_command(label="Exit", command=self._confirm_exit)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="Help", command=self._show_help)
+        help_menu.add_command(label="Contacts", command=self._show_contacts)
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+        self._menubar = menubar
+
+    def _confirm_exit(self):
+        if messagebox.askyesno("Exit BarBell", "Are you sure you want to exit BarBell?", parent=self):
+            self.destroy()
+
+    def _show_placeholder_screen(self, title: str, text: str):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=25)
+        frame.pack()
+        ttk.Label(frame, text=title, font=("", 14, "bold")).pack(pady=(0, 10))
+        ttk.Label(frame, text=text, justify="center", wraplength=380).pack()
+        ttk.Button(frame, text="Close", command=win.destroy).pack(pady=(15, 0))
+        return win
+
+    def _show_help(self):
+        # No help content exists yet - placeholder to be filled in later.
+        self._show_placeholder_screen("Help", "Help content will be added here.")
+
+    def _show_contacts(self):
+        # Contact details to be supplied - placeholder for now.
+        self._show_placeholder_screen("Contacts", "Contact details will be added here.")
 
 
 if __name__ == "__main__":

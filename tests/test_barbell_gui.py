@@ -1,6 +1,7 @@
 import pytest
 
 from barbell_gui import check_setup_password
+from src.gs1 import build_contents_element_string
 from src.labels import ProductInfo
 from src.settings import Settings
 from src.version import BUILD_DATE, version_string
@@ -218,7 +219,7 @@ class TestHistoryViewer:
                 job_number="122984", packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
                 item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=27000,
-                batch="12298447388", production_date="2026-03-23", sscc="086001571120000001",
+                batch="12298447388", production_date="260323", sscc="086001571120000001",
                 gtin="00051096184921", package_index=1, label_copy_index=1,
             )
         ]
@@ -251,7 +252,7 @@ class TestHistoryViewer:
             return LabelRow(
                 job_number=job_number, packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                item_description="desc", quantity=100, batch="batch", production_date="260323",
                 sscc=sscc, gtin="00051096184921", package_index=1, label_copy_index=1,
             )
 
@@ -347,7 +348,7 @@ class TestDemoMode:
             LabelRow(
                 job_number="DEMO-1001", packing_slip_number="DEMO-PS-5001", customer_number="DEMO-C01",
                 customer_name="Acme (DEMO)", product_no="DEMO-P100", item_number="D-100",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-09-16",
+                item_description="desc", quantity=100, batch="batch", production_date="260916",
                 sscc="TEST-SSCC-00001", gtin="00099999000016", package_index=1, label_copy_index=1,
             )
         ]
@@ -365,7 +366,7 @@ class TestDemoMode:
             LabelRow(
                 job_number="122984", packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                item_description="desc", quantity=100, batch="batch", production_date="260323",
                 sscc="086001571120000001", gtin="00051096184921", package_index=1, label_copy_index=1,
             )
         ]
@@ -414,7 +415,7 @@ class TestHistoryReprintSelection:
             return LabelRow(
                 job_number=job_number, packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                item_description="desc", quantity=100, batch="batch", production_date="260323",
                 sscc=sscc, gtin="00051096184921", package_index=1, label_copy_index=1,
             )
 
@@ -612,7 +613,7 @@ class TestHistorySsccSearchAndScrolling:
             LabelRow(
                 job_number="122984", packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                item_description="desc", quantity=100, batch="batch", production_date="260323",
                 sscc=sscc, gtin="00051096184921", package_index=i, label_copy_index=1,
             )
             for i, sscc in enumerate(ssccs, start=1)
@@ -745,7 +746,7 @@ class TestVoidPallet:
                 job_number="122984", packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
                 item_description="desc", quantity=10000, batch="12298447388",
-                production_date="2026-03-23", sscc=sscc, gtin="00051096184921",
+                production_date="260323", sscc=sscc, gtin="00051096184921",
                 package_index=i, label_copy_index=1,
             )
             for i, sscc in enumerate(["008600157112000128", "008600157112000296"], start=1)
@@ -755,7 +756,7 @@ class TestVoidPallet:
         )
         create_pallet(
             carton_ssccs=[c.sscc for c in cartons], job_number="122984", quantity=20000,
-            production_date="2026-03-23", packing_slip_number="100495",
+            production_date="260323", packing_slip_number="100495",
             pallet_sscc="008600157112099999", carton_count=2, db_path=db_path,
         )
         return [c.sscc for c in cartons]
@@ -1010,7 +1011,7 @@ class TestGenerateCsvWriteFailure:
         app.gtin_entry_var.set(product.gtin_raw or "")
         app.units_per_package_var.set("27000")
         app.labels_per_package_var.set("1")
-        app.production_date_var.set("2026-09-25")
+        app.production_date_var.set("260925")
         app.test_mode_var.set(True)
 
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
@@ -1033,3 +1034,309 @@ class TestGenerateCsvWriteFailure:
 
         history = fetch_label_history(app.settings.demo_db_file, job_number="DEMO-1001")
         assert len(history) > 0  # DB write still succeeded despite the CSV failure
+
+
+# --- 1.1.7: menu bar, Setup access levels, Test Mode setting, date format, logos ---------------
+
+
+def _menu_labels(menu):
+    last = menu.index("end")
+    return [menu.entrycget(i, "label") for i in range(last + 1)] if last is not None else []
+
+
+def _invoke_menu(menu, label):
+    for i, name in enumerate(_menu_labels(menu)):
+        if name == label:
+            menu.invoke(i)
+            return
+    raise AssertionError(f"no menu entry {label!r} in {_menu_labels(menu)}")
+
+
+def _help_menu(app):
+    return app.nametowidget(app._menubar.entrycget(2, "menu"))
+
+
+def _all_button_texts(widget):
+    texts = []
+    for child in widget.winfo_children():
+        if child.winfo_class() in ("TButton", "Button"):
+            texts.append(child.cget("text"))
+        texts.extend(_all_button_texts(child))
+    return texts
+
+
+class TestMenuBar:
+    def test_top_level_items_are_setup_exit_help_in_that_order(self, app):
+        assert _menu_labels(app._menubar) == ["Setup", "Exit", "Help"]
+
+    def test_help_menu_has_help_contacts_about(self, app):
+        assert _menu_labels(_help_menu(app)) == ["Help", "Contacts", "About"]
+
+    def test_main_form_no_longer_has_an_about_button(self, app):
+        assert "About" not in _all_button_texts(app)
+
+    def test_help_and_contacts_open_their_own_screens(self, app):
+        for label in ("Help", "Contacts"):
+            before = set(app.winfo_children())
+            _invoke_menu(_help_menu(app), label)
+            new = next(iter(set(app.winfo_children()) - before))
+            assert new.title() == label
+            new.destroy()
+
+    def test_about_menu_item_opens_the_existing_about_screen(self, app):
+        before = set(app.winfo_children())
+        _invoke_menu(_help_menu(app), "About")
+        about = next(iter(set(app.winfo_children()) - before))
+        assert about.title() == "About BarBell"
+        assert f"Version: {version_string()}" in _all_label_texts(about)
+        about.destroy()
+
+
+class TestExitMenu:
+    def test_yes_closes_the_app(self, app, monkeypatch):
+        closed, asked = [], []
+        monkeypatch.setattr(
+            "tkinter.messagebox.askyesno", lambda title, msg, **k: (asked.append(msg), True)[1]
+        )
+        monkeypatch.setattr(app, "destroy", lambda: closed.append(True))
+
+        _invoke_menu(app._menubar, "Exit")
+
+        assert asked == ["Are you sure you want to exit BarBell?"]
+        assert closed == [True]
+
+    def test_no_returns_to_the_app_with_nothing_changed(self, app, monkeypatch):
+        closed = []
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
+        monkeypatch.setattr(app, "destroy", lambda: closed.append(True))
+        windows_before = set(app.winfo_children())
+        job_before = app.job_number_var.get()
+
+        _invoke_menu(app._menubar, "Exit")
+
+        assert closed == []
+        assert set(app.winfo_children()) == windows_before
+        assert app.job_number_var.get() == job_before
+
+
+class TestSetupEntryAndPasswords:
+    """The Setup menu item and the About screen's Setup button must go through
+    the same code (BarBellApp._prompt_setup_password) and behave identically."""
+
+    STANDARD = "change4GOOD"
+    ADMIN = "42Novell@1430$"
+
+    def _arrange(self, app, monkeypatch, typed):
+        popen_calls, infos, errors = [], [], []
+        monkeypatch.setattr("barbell_gui.load_settings", lambda *a, **k: Settings(setup_password=self.STANDARD))
+        monkeypatch.setattr("barbell_gui.simpledialog.askstring", lambda *a, **k: typed)
+        monkeypatch.setattr("barbell_gui.subprocess.Popen", lambda args, **k: popen_calls.append(args))
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append(msg))
+        return popen_calls, infos, errors
+
+    def _via_menu(self, app):
+        _invoke_menu(app._menubar, "Setup")
+
+    def _via_about_button(self, app):
+        before = set(app.winfo_children())
+        app._show_about()
+        about = next(iter(set(app.winfo_children()) - before))
+        next(
+            b for b in _all_buttons(about) if b.cget("text") == "Setup..."
+        ).invoke()
+        about.destroy()
+
+    @pytest.mark.parametrize("entry", ["_via_menu", "_via_about_button"])
+    def test_standard_password_opens_setup_as_standard_without_welcome(self, app, monkeypatch, entry):
+        popen_calls, infos, errors = self._arrange(app, monkeypatch, self.STANDARD)
+
+        getattr(self, entry)(app)
+
+        assert len(popen_calls) == 1
+        assert popen_calls[0][-2:] == ["--access-level", "standard"]
+        assert popen_calls[0][1].endswith("setup_gui.py")
+        assert infos == [] and errors == []  # no welcome, no error
+
+    @pytest.mark.parametrize("entry", ["_via_menu", "_via_about_button"])
+    def test_admin_password_opens_setup_as_admin_and_welcomes_greg(self, app, monkeypatch, entry):
+        popen_calls, infos, errors = self._arrange(app, monkeypatch, self.ADMIN)
+
+        getattr(self, entry)(app)
+
+        assert len(popen_calls) == 1
+        assert popen_calls[0][-2:] == ["--access-level", "admin"]
+        assert infos == ["Welcome Greg"]
+        assert errors == []
+
+    @pytest.mark.parametrize("entry", ["_via_menu", "_via_about_button"])
+    def test_wrong_password_is_refused_and_never_echoed(self, app, monkeypatch, entry):
+        popen_calls, infos, errors = self._arrange(app, monkeypatch, "not-the-password")
+
+        getattr(self, entry)(app)
+
+        assert popen_calls == [] and infos == []
+        assert errors == ["That password is incorrect."]
+        assert "not-the-password" not in errors[0]
+
+    @pytest.mark.parametrize("entry", ["_via_menu", "_via_about_button"])
+    def test_cancelling_the_prompt_does_nothing(self, app, monkeypatch, entry):
+        popen_calls, infos, errors = self._arrange(app, monkeypatch, None)
+
+        getattr(self, entry)(app)
+
+        assert popen_calls == [] and infos == [] and errors == []
+
+    def test_neither_password_is_logged_or_shown_on_success_or_failure(self, app, monkeypatch, caplog):
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        for typed in (self.STANDARD, self.ADMIN, "wrong"):
+            popen_calls, infos, errors = self._arrange(app, monkeypatch, typed)
+            self._via_menu(app)
+            for message in infos + errors:
+                assert self.STANDARD not in message and self.ADMIN not in message
+        assert self.STANDARD not in caplog.text and self.ADMIN not in caplog.text
+
+    def test_the_existing_check_setup_password_function_is_unchanged(self):
+        assert check_setup_password("change4GOOD", Settings(setup_password="change4GOOD")) is True
+        assert check_setup_password("42Novell@1430$", Settings(setup_password="change4GOOD")) is False
+
+
+class TestDisableTestModeCheckboxSetting:
+    def _apply(self, app, monkeypatch, demo, disable):
+        monkeypatch.setattr(app.settings, "demo_mode", demo)
+        monkeypatch.setattr(app.settings, "disable_test_mode_checkbox", disable)
+        app.test_mode_var.set(True)  # start from a ticked box so "turned off" is observable
+        app._apply_demo_mode_ui()
+
+    def test_checked_setting_turns_the_box_off_and_disables_it(self, app, monkeypatch):
+        self._apply(app, monkeypatch, demo=False, disable=True)
+        assert app.test_mode_var.get() is False
+        assert str(app.test_mode_checkbox.cget("state")) == "disabled"
+        self._apply(app, monkeypatch, demo=False, disable=False)  # leave the shared app tidy
+
+    def test_unchecked_setting_leaves_the_box_usable_as_before(self, app, monkeypatch):
+        self._apply(app, monkeypatch, demo=False, disable=False)
+        assert str(app.test_mode_checkbox.cget("state")) == "normal"
+        assert app.test_mode_var.get() is True  # not forced either way
+
+    def test_demo_mode_still_forces_test_mode_on_and_locked(self, app, monkeypatch):
+        self._apply(app, monkeypatch, demo=True, disable=True)
+        assert app.test_mode_var.get() is True
+        assert str(app.test_mode_checkbox.cget("state")) == "disabled"
+        self._apply(app, monkeypatch, demo=False, disable=False)
+
+
+class TestProductionDateEntry:
+    def _prime(self, app, tmp_path, monkeypatch, production_date):
+        from src.demo_data import DemoConnection
+        from src.labels import get_product_info, list_packing_slip_line_items
+
+        monkeypatch.setattr(app.settings, "demo_mode", True)
+        monkeypatch.setattr(app.settings, "demo_db_file", str(tmp_path / "barbell_demo.db"))
+        monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "output"))
+        monkeypatch.setattr(app.settings, "demo_audit_log_file", str(tmp_path / "demo_audit.jsonl"))
+        conn = DemoConnection()
+        line_item = list_packing_slip_line_items(conn, "DEMO-PS-5001")[0]
+        product = get_product_info(conn, line_item.product_number)
+        app.job_number_var.set("DEMO-1001")
+        app._selected_line_item = line_item
+        app._product = product
+        app.gtin_entry_var.set(product.gtin_raw or "")
+        app.units_per_package_var.set("27000")
+        app.labels_per_package_var.set("1")
+        app.production_date_var.set(production_date)
+        app.test_mode_var.set(True)
+        errors = []
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append((title, msg)))
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        return errors
+
+    def test_yymmdd_is_accepted_and_flows_to_database_csv_and_barcode(self, app, tmp_path, monkeypatch):
+        import csv
+
+        from src.db.local_store import fetch_label_history
+
+        errors = self._prime(app, tmp_path, monkeypatch, "261104")
+        app._generate()
+
+        assert errors == []
+        history = fetch_label_history(app.settings.demo_db_file, job_number="DEMO-1001")
+        assert history and {r.production_date for r in history} == {"261104"}
+        csv_files = list((tmp_path / "output").glob("*.csv"))
+        assert len(csv_files) == 1
+        with open(csv_files[0], newline="", encoding="utf-8") as f:
+            assert {row["ProductionDate"] for row in csv.DictReader(f)} == {"261104"}
+        info = app._gather_preview_inputs()
+        assert "(11)261104" in build_contents_element_string(
+            info["gtin"], info["production_date"], info["first_package_qty"], info["batch"]
+        )
+
+    @pytest.mark.parametrize("bad", ["2026-11-04", "26-11-04", "261304", "261132", "26110", "abcdef", ""])
+    def test_anything_but_a_real_yymmdd_date_is_refused(self, app, tmp_path, monkeypatch, bad):
+        errors = self._prime(app, tmp_path, monkeypatch, bad)
+
+        assert app._gather_preview_inputs() is None
+
+        assert len(errors) == 1 and errors[0][0] == "Invalid date"
+        assert "YYMMDD" in errors[0][1]
+
+    def test_the_entry_and_history_filter_are_labelled_yymmdd(self, app):
+        assert any("Production date (YYMMDD" in t for t in _all_label_texts(app))
+
+
+class TestHeaderLogos:
+    def test_all_three_logos_load(self, app):
+        assert app._header_lcj_logo is not None
+        assert app._header_clc_logo is not None
+        assert app._header_making_ideas_logo is not None
+
+    def test_logos_keep_their_aspect_ratio_and_fit_the_existing_header_height(self, app):
+        from PIL import Image
+
+        import barbell_gui as g
+
+        cases = [
+            (g.LCJ_LOGO_PATH, app._header_lcj_logo),
+            (g.CLC_LOGO_PATH, app._header_clc_logo),
+            (g.MAKING_IDEAS_LOGO_PATH, app._header_making_ideas_logo),
+        ]
+        for path, photo in cases:
+            with Image.open(path) as source:
+                source_ratio = source.width / source.height
+            assert abs(photo.width() / photo.height() - source_ratio) / source_ratio < 0.02, path.name
+            assert photo.height() <= max(g.HEADER_LOGO_ROW_HEIGHT_PX, g.HEADER_MAKING_IDEAS_HEIGHT_PX)
+
+        stack_height = g.HEADER_LOGO_ROW_HEIGHT_PX + g.HEADER_LOGO_GAP_PX + g.HEADER_MAKING_IDEAS_HEIGHT_PX
+        assert stack_height <= g.HEADER_BARBELL_HEIGHT_PX  # the header does not need to grow
+
+    def test_layout_lcj_left_of_clc_in_line_and_tagline_centred_under_clc(self, app):
+        app.update()
+        w = app._header_logo_widgets
+        lcj, clc, tag = w["lcj"], w["clc"], w["making_ideas"]
+
+        assert lcj.winfo_x() + lcj.winfo_width() <= clc.winfo_x()  # LCJ on the left of CLC
+        assert abs((lcj.winfo_y() + lcj.winfo_height() / 2) - (clc.winfo_y() + clc.winfo_height() / 2)) <= 1  # in line
+        assert tag.winfo_y() >= clc.winfo_y() + clc.winfo_height()  # tagline below CLC
+        clc_centre = clc.winfo_x() + clc.winfo_width() / 2
+        tag_centre = tag.winfo_x() + tag.winfo_width() / 2
+        assert abs(clc_centre - tag_centre) <= 1  # directly under CLC
+
+    def test_gaps_are_even_and_the_block_stays_inside_the_header_clear_of_the_barbell_logo(self, app):
+        import barbell_gui as g
+
+        app.update()
+        w = app._header_logo_widgets
+        lcj, clc, tag, block, center = w["lcj"], w["clc"], w["making_ideas"], w["block"], w["center"]
+
+        horizontal_gap = clc.winfo_x() - (lcj.winfo_x() + lcj.winfo_width())
+        vertical_gap = tag.winfo_y() - (clc.winfo_y() + clc.winfo_height())
+        assert horizontal_gap == vertical_gap == g.HEADER_LOGO_GAP_PX
+
+        assert block.winfo_height() <= g.HEADER_BARBELL_HEIGHT_PX
+        header = block.master
+        assert block.winfo_y() >= 0 and block.winfo_y() + block.winfo_height() <= header.winfo_height()
+        center_right = center.winfo_x() + center.winfo_width()
+        assert block.winfo_x() > center_right  # no overlap with the centred BarBell logo

@@ -3,6 +3,37 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.7 Beta - 2026-11-04
+
+- Menu bar across the top of the main form: **Setup**, **Exit**, **Help** (Help,
+  Contacts, About). The About button at the bottom of the main form is gone - About
+  is reached from the Help menu. Exit asks "Are you sure you want to exit BarBell?"
+  and only closes on Yes. Help and Contacts are placeholder screens for now (there
+  was no existing help content).
+- Setup is now also a top-level menu item. It and the Setup button on the About
+  screen (unchanged) call the same method, so the password prompt and everything
+  after it behave identically.
+- Second Setup password. The existing one (`change4GOOD`, from `settings.json`) works
+  exactly as before; the second also opens Setup and additionally shows "Welcome
+  Greg". Setup is told which level was used (`SetupAccessLevel.Standard`/`Admin`,
+  passed to `setup_gui.py` as `--access-level`) so it can branch on it later - both
+  levels get identical Setup functionality for now. Both passwords are defined only
+  in `src/setup_access.py`, and neither is ever logged or shown in a message.
+- Setup: new "Disable Test Mode checkbox on main form" checkbox in the Demo Mode
+  area (`Settings.disable_test_mode_checkbox`, saved with the other settings). When
+  on, the main form's Test mode checkbox starts unchecked and greyed out; applied
+  when the main form loads. Demo Mode still forces Test mode on and locked.
+- Production date is now **YYMMDD** (4 Nov 2026 = `261104`) everywhere: entered
+  (main form, CLI), validated (`src/dates.py`), stored (SQLite), shown (pallet
+  screens, report), exported (CSV `ProductionDate` column), and in the AI (11)
+  barcode (which was already YYMMDD). Existing databases are converted in place the
+  first time they're opened (the `.db` file is backed up first); old YYYY-MM-DD
+  values are still understood everywhere, so nothing reads them wrong.
+- Main-form header: LCJ logo on the left in line with the CLC logo, and the "Making
+  Ideas Take Shape!" logo directly under CLC, all in the header's existing height
+  (logos rescaled with high-quality resampling, aspect ratio kept). New assets:
+  `assets/lcj_logo.png`, `assets/making_ideas_logo.png` (the "Making Ideas Take Shape!" wordmark).
+
 ## 1.1.6 Beta - 2026-10-26
 
 - Job/Label History: Reprint Selected, Void Pallet and Pallet Report (PDF) now sit on

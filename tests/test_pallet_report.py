@@ -25,7 +25,7 @@ def carton_rows(ssccs, quantity=10000, copies=1):
             job_number="122984", packing_slip_number="100495", customer_number="J00005",
             customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
             item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=quantity,
-            batch="12298447388", production_date="2026-03-23", sscc=sscc, gtin=GTIN,
+            batch="12298447388", production_date="260323", sscc=sscc, gtin=GTIN,
             package_index=i, label_copy_index=copy,
         )
         for i, sscc in enumerate(ssccs, start=1)
@@ -40,7 +40,7 @@ def seed_pallet(db_path, ssccs=("008600157112000128", "008600157112000296"), cop
     )
     create_pallet(
         carton_ssccs=list(ssccs), job_number="122984", quantity=10000 * len(ssccs),
-        production_date="2026-03-23", packing_slip_number="100495",
+        production_date="260323", packing_slip_number="100495",
         pallet_sscc=PALLET_SSCC, carton_count=len(ssccs), db_path=db_path,
     )
     return list(ssccs)
@@ -51,13 +51,13 @@ def make_report(carton_count, pallet_sscc=PALLET_SSCC, test_mode=False):
         PalletReportCarton(
             sscc=f"00860015711200{i:04d}"[:18].ljust(18, "0"), item_number="233458",
             description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=10000 + i,
-            batch="12298447388", gtin=GTIN, production_date="2026-03-23",
+            batch="12298447388", gtin=GTIN, production_date="260323",
         )
         for i in range(carton_count)
     ]
     return PalletReport(
         pallet_sscc=pallet_sscc, job_number="122984", packing_slip_number="100495",
-        production_date="2026-03-23", test_mode=test_mode,
+        production_date="260323", test_mode=test_mode,
         created_at="2026-09-25T14:03:00+00:00", cartons=cartons,
     )
 
@@ -81,7 +81,7 @@ def test_fetch_pallet_report_lists_each_carton_once_in_generation_order(tmp_path
     assert report.pallet_sscc == PALLET_SSCC
     assert report.job_number == "122984"
     assert report.packing_slip_number == "100495"
-    assert report.production_date == "2026-03-23"
+    assert report.production_date == "260323"
     assert report.test_mode is False
     assert [c.sscc for c in report.cartons] == ssccs
     assert report.total_quantity == 20000

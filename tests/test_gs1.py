@@ -14,7 +14,7 @@ def test_build_contents_element_string_matches_users_real_example():
     assert (
         build_contents_element_string(
             gtin="00721059000635",
-            production_date_iso="2026-05-15",
+            production_date="260515",
             quantity=5000,
             batch="122984",
         )

@@ -53,7 +53,7 @@ def make_carton_row(sscc, job_number="122984", **overrides):
         job_number=job_number, packing_slip_number="100495", customer_number="J00005",
         customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
         item_description="desc", quantity=10000, batch="12298447388",
-        production_date="2026-03-23", sscc=sscc, gtin="00051096184921",
+        production_date="260323", sscc=sscc, gtin="00051096184921",
         package_index=1, label_copy_index=1,
     )
     defaults.update(overrides)
@@ -243,8 +243,8 @@ class TestScanning:
         seed_cartons(
             db_path,
             [
-                make_carton_row("008600157112000128", production_date="2026-03-23"),
-                make_carton_row("008600157112000296", production_date="2026-03-24"),
+                make_carton_row("008600157112000128", production_date="260323"),
+                make_carton_row("008600157112000296", production_date="260324"),
             ],
         )
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
@@ -263,8 +263,8 @@ class TestScanning:
         seed_cartons(
             db_path,
             [
-                make_carton_row("008600157112000128", production_date="2026-03-23"),
-                make_carton_row("008600157112000296", production_date="2026-03-24"),
+                make_carton_row("008600157112000128", production_date="260323"),
+                make_carton_row("008600157112000296", production_date="260324"),
             ],
         )
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
@@ -510,7 +510,7 @@ class TestCartonPicker:
         ])
         create_pallet(
             carton_ssccs=[self.SSCCS[0]], job_number="122984", quantity=10000,
-            production_date="2026-03-23", packing_slip_number="100495",
+            production_date="260323", packing_slip_number="100495",
             pallet_sscc="008600157112099999", carton_count=1, db_path=db_path,
         )
 
