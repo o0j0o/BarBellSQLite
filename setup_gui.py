@@ -66,7 +66,7 @@ class SetupGUI(tk.Tk):
     def __init__(self, access_level: SetupAccessLevel = SetupAccessLevel.Standard):
         super().__init__()
         self.title("BarBell Setup")
-        self.resizable(False, False)
+        self.resizable(False, True)  # height can be changed (the form scrolls); width is fixed
 
         # Which password got us here (the main window passes it on launch -
         # see BarBellApp._prompt_setup_password). Both levels get identical
@@ -76,6 +76,7 @@ class SetupGUI(tk.Tk):
 
         self.settings = load_settings()
 
+        self._build_scroll_area()
         self._build_label_traxx_section()
         self._build_output_section()
         self._build_gs1_section()
@@ -85,6 +86,7 @@ class SetupGUI(tk.Tk):
         self._build_buttons()
 
         self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
+        self._fit_window()
 
     @property
     def is_admin(self) -> bool:
@@ -92,8 +94,59 @@ class SetupGUI(tk.Tk):
 
     # --- widget layout -----------------------------------------------------
 
+    def _build_scroll_area(self):
+        """The sections live in a scrollable body (self.body) so the whole form
+        is reachable on any screen; the Save Settings bar is pinned to the
+        bottom outside it, so it's always visible."""
+        self._button_bar = ttk.Frame(self, padding=10)
+        self._button_bar.pack(side="bottom", fill="x")
+
+        container = ttk.Frame(self)
+        container.pack(side="top", fill="both", expand=True)
+        self._canvas = tk.Canvas(
+            container, highlightthickness=0, borderwidth=0,
+            background=ttk.Style(self).lookup("TFrame", "background") or self.cget("background"),
+        )
+        self._scrollbar = ttk.Scrollbar(container, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self.body = ttk.Frame(self._canvas)
+        self._body_window = self._canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind(
+            "<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        )
+        self._canvas.bind(
+            "<Configure>", lambda e: self._canvas.itemconfigure(self._body_window, width=e.width)
+        )
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        first, last = self._canvas.yview()
+        if (first, last) != (0.0, 1.0):  # only scroll when there's something to scroll to
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _fit_window(self):
+        """Sizes the window to the form, capped to the screen so it never runs
+        off the bottom (the scrollbar covers the rest)."""
+        self.update_idletasks()
+        self._canvas.configure(width=self.body.winfo_reqwidth())
+        room = self.winfo_screenheight() - 160  # title bar, taskbar, Save bar
+        self._canvas.configure(height=min(self.body.winfo_reqheight(), max(300, room)))
+
+    def _note(self, parent, text):
+        """A small explanatory note that wraps to the full width of the section
+        it sits in (re-wrapping if that width changes), so it takes fewer lines
+        than hand-broken text. Place it with grid()/pack() as usual."""
+        label = ttk.Label(parent, text=text, justify="left", font=("", 8), wraplength=700)
+        parent.bind(
+            "<Configure>", lambda e: label.config(wraplength=max(200, e.width - 30)), add="+"
+        )
+        return label
+
     def _build_label_traxx_section(self):
-        frame = ttk.LabelFrame(self, text="Label Traxx Connection", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Label Traxx Connection", padding=10)
         frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         frame.columnconfigure(1, weight=1)
 
@@ -118,21 +171,17 @@ class SetupGUI(tk.Tk):
         # each plant has its own prefix/extension digit/counter file (see
         # Settings.jamaica_*, QUESTIONS.md #19) so they can never collide.
         self.plant_combobox.bind("<<ComboboxSelected>>", self._on_plant_changed)
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                "Selects which plant's Windows ODBC DSN to connect to - both DSNs must\n"
-                "already exist in this machine's ODBC Data Source Administrator; Setup\n"
-                "only picks between them. Username/password are unaffected - both plants\n"
-                "share the same Label Traxx login. Takes effect the next time BarBell is\n"
-                "started. You can also type a DSN name directly if it's not in the list."
-            ),
-            justify="left",
-            font=("", 8),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            "Selects which plant's Windows ODBC DSN to connect to - both DSNs must already exist "
+            "in this machine's ODBC Data Source Administrator; Setup only picks between them. "
+            "Username/password are unaffected - both plants share the same Label Traxx login. "
+            "Takes effect the next time BarBell is started. You can also type a DSN name directly "
+            "if it's not in the list.",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
     def _build_output_section(self):
-        frame = ttk.LabelFrame(self, text="Label Output", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Label Output", padding=10)
         frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 5))
         frame.columnconfigure(1, weight=1)
 
@@ -144,7 +193,7 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Browse...", command=self._browse_output_dir).grid(row=0, column=2)
 
     def _build_gs1_section(self):
-        self.gs1_frame = ttk.LabelFrame(self, text="GS1 / SSCC Configuration", padding=10)
+        self.gs1_frame = ttk.LabelFrame(self.body, text="GS1 / SSCC Configuration", padding=10)
         self.gs1_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         self.gs1_frame.columnconfigure(1, weight=1)
         frame = self.gs1_frame
@@ -175,7 +224,7 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Browse...", command=self._browse_state_file).grid(row=3, column=2)
 
     def _build_counter_section(self):
-        frame = ttk.LabelFrame(self, text="SSCC Counter Status", padding=10)
+        frame = ttk.LabelFrame(self.body, text="SSCC Counter Status", padding=10)
         frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         frame.columnconfigure(1, weight=1)
 
@@ -197,24 +246,19 @@ class SetupGUI(tk.Tk):
         self.reset_button.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _build_demo_section(self):
-        frame = ttk.LabelFrame(self, text="Demo Mode", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Demo Mode", padding=10)
         frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
 
         self.demo_mode_var = tk.BooleanVar(value=self.settings.demo_mode)
         ttk.Checkbutton(frame, text="Run as Demo", variable=self.demo_mode_var).pack(anchor="w")
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                "Runs entirely on self-contained sample data - no Label Traxx/ODBC or\n"
-                "other network calls at all. Safe to use with no network access. Demo\n"
-                "runs are logged to a separate database and CSVs are prefixed \"DEMO_\",\n"
-                "so they never mix with real data. The main window shows an unmistakable\n"
-                "DEMO MODE banner whenever this is on. Takes effect the next time BarBell\n"
-                "is started."
-            ),
-            justify="left",
-            font=("", 8),
-        ).pack(anchor="w", pady=(4, 0))
+            "Runs entirely on self-contained sample data - no Label Traxx/ODBC or other network "
+            "calls at all. Safe to use with no network access. Demo runs are logged to a separate "
+            "database and CSVs are prefixed \"DEMO_\", so they never mix with real data. The main "
+            "window shows an unmistakable DEMO MODE banner whenever this is on. Takes effect the "
+            "next time BarBell is started.",
+        ).pack(fill="x", pady=(4, 0))
 
         self.disable_test_mode_var = tk.BooleanVar(value=self.settings.disable_test_mode_checkbox)
         ttk.Checkbutton(
@@ -222,19 +266,15 @@ class SetupGUI(tk.Tk):
             text="Disable Test Mode checkbox on main form",
             variable=self.disable_test_mode_var,
         ).pack(anchor="w", pady=(10, 0))
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                "When checked, the Test mode checkbox on the main form is turned off and\n"
-                "greyed out. Takes effect the next time BarBell is started. (Demo Mode still\n"
-                "forces Test mode on, so a demo can never issue a real SSCC.)"
-            ),
-            justify="left",
-            font=("", 8),
-        ).pack(anchor="w", pady=(2, 0))
+            "When checked, the Test mode checkbox on the main form is turned off and greyed out. "
+            "Takes effect the next time BarBell is started. (Demo Mode still forces Test mode on, "
+            "so a demo can never issue a real SSCC.)",
+        ).pack(fill="x", pady=(2, 0))
 
     def _build_backup_section(self):
-        frame = ttk.LabelFrame(self, text="Backup and Restore", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Backup and Restore", padding=10)
         frame.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
         frame.columnconfigure(1, weight=1)
 
@@ -245,17 +285,13 @@ class SetupGUI(tk.Tk):
         )
         ttk.Button(frame, text="Browse...", command=self._browse_backup_dir).grid(row=0, column=2)
 
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                f"BarBell backs up the database and both SSCC counters when it closes (keeping the\n"
-                f"last {self.settings.backup_keep_count}; skipped if nothing changed). Leave blank to turn backups off. "
-                "Choose a folder on another\ndrive or a network share - not inside OneDrive, "
-                "which can corrupt a live database."
-            ),
-            justify="left",
-            font=("", 8),
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+            f"BarBell backs up the database and both SSCC counters when it closes (keeping the last "
+            f"{self.settings.backup_keep_count}; skipped if nothing changed). Leave blank to turn "
+            "backups off. Choose a folder on another drive or a network share - not inside "
+            "OneDrive, which can corrupt a live database.",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
@@ -273,8 +309,7 @@ class SetupGUI(tk.Tk):
             ).pack(side="left", padx=(10, 0))
 
     def _build_buttons(self):
-        frame = ttk.Frame(self, padding=10)
-        frame.grid(row=6, column=0, sticky="ew")
+        frame = self._button_bar  # pinned below the scrolling form (see _build_scroll_area)
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------

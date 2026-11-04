@@ -3,6 +3,15 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.10 Beta - 2026-11-04
+
+- Setup form: the form now scrolls (scrollbar on the right, mouse wheel works), so the
+  whole thing is reachable on a short screen. The window opens sized to fit the screen,
+  and **Save Settings is pinned to the bottom** so it's always visible.
+- Setup form: the explanatory notes (Plant, Demo Mode, Disable Test Mode, Backup) now
+  wrap to the full width of their section instead of a narrow hand-broken column, so
+  they take fewer lines.
+
 ## 1.1.9 Beta - 2026-11-04
 
 - Backup and restore (`src/backup.py`). A backup is one timestamped folder holding a
