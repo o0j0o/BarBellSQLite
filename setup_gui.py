@@ -608,6 +608,12 @@ class SetupGUI(tk.Tk):
         )
 
 
+def run(access_level: SetupAccessLevel = SetupAccessLevel.Standard) -> None:
+    """Opens Setup and runs it. Also how the installed BarBell.exe starts Setup
+    (BarBell.exe --setup), since the .exe has no separate setup_gui.py to run."""
+    SetupGUI(access_level).mainloop()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -616,4 +622,4 @@ if __name__ == "__main__":
         default=SetupAccessLevel.Standard.value,
     )
     args = parser.parse_args()
-    SetupGUI(SetupAccessLevel(args.access_level)).mainloop()
+    run(SetupAccessLevel(args.access_level))

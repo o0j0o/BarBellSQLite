@@ -13,9 +13,12 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from src.paths import settings_file
 from src.setup_access import STANDARD_SETUP_PASSWORD_DEFAULT
 
-DEFAULT_SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+# Development: settings.json in the project folder, as always. Installed: in the
+# data folder next to the program (see src/paths.py).
+DEFAULT_SETTINGS_FILE = settings_file()
 
 # The Jamaica Label Traxx DSN name (see label_traxx_dsn below) - the single
 # place that decides "is the active plant Jamaica" for SSCC purposes too.

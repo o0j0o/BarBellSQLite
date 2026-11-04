@@ -3,6 +3,35 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.15 Beta - 2026-11-04
+
+- Installer build: the finished `BarBell-Setup-1.2.0-Beta.exe` is now copied to `installer/Output/` in the
+  project (git-ignored) so it can actually be found and handed out. It used to be left in
+  `%LOCALAPPDATA%\BarBellBuild\Output`, which - when built from inside the Claude desktop app - Windows silently
+  redirects into the app's private storage, so File Explorer reported "Location is not available". The test
+  script looks in `installer\Output` first.
+
+## 1.1.14 Beta - 2026-11-04
+
+- Windows installer (`installer/`), producing **BarBell-Setup-1.2.0-Beta.exe** - the production package is
+  labelled 1.2.0 Beta; this development copy stays on 1.1.x (the build stamps the version into a staged copy
+  only). Built with PyInstaller (the app and a small helper) and Inno Setup. Windows 11 only. Wizard: a
+  Label Traxx ODBC check/prompt, the install folder (default `C:\BarBell`), detection of an existing
+  installation with a verified backup of its database and both SSCC counters *before anything is changed*, a
+  keep / restore-from-file-or-backup / start-blank choice, and the Label Traxx login. Desktop and Start menu
+  icons use BarBell's own icon. Uninstalling never removes the data or the backups. See `installer/README.md`.
+- The app now runs correctly when installed as an .exe: data (settings.json, barbell.db, counters, .env) lives
+  in `<install folder>\data` (`src/paths.py`; from source nothing changes), Setup is started with
+  `BarBell.exe --setup`, and `--version` / `--selftest FILE` exist for checks. BarBell also names itself with a
+  mutex so the installer asks to close it before upgrading.
+- `src/installer_support.py`: the data logic the installer calls - find an existing install (installed layout or
+  a manual copy), verified pre-install backup (raw copy if the database is too damaged to verify), restore
+  from a backup folder or a bare database file (checked first), start blank. A counter never moves backwards.
+- `installer/test_installer.ps1` runs the installer unattended (install and start, upgrade keeps data, restore
+  paths, uninstall keeps data).
+- The installer and `BarBell.exe` are unsigned, which security software such as CylancePROTECT blocks - see
+  `installer/README.md`.
+
 ## 1.1.13 Beta - 2026-11-04
 
 - Help > Help now opens the BarBell Operator Guide in the PC's default web browser
