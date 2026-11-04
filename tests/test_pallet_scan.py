@@ -116,7 +116,7 @@ def make_carton(**overrides):
     defaults = dict(
         id=1, sscc="086001571120000012", job_number="122984", product_no="47388",
         item_number="233458", gtin="00051096184921", batch="12298447388", quantity=10000,
-        production_date="2026-03-23", packing_slip_number="100495", status="original",
+        production_date="260323", packing_slip_number="100495", status="original",
         pallet_sscc=None, label_type="CARTON", test_mode=False, created_at="2026-03-23T00:00:00",
     )
     defaults.update(overrides)
@@ -196,8 +196,8 @@ def test_clean_scan_no_warnings_is_accepted():
 
 
 def test_differing_production_date_warns_not_blocks():
-    first = make_carton(sscc="086001571120000012", production_date="2026-03-23")
-    second = make_carton(sscc="086001571120000029", production_date="2026-03-24")
+    first = make_carton(sscc="086001571120000012", production_date="260323")
+    second = make_carton(sscc="086001571120000029", production_date="260324")
     result = check_carton_for_pallet(second, [first], expected_count=5, pallet_test_mode=False)
     assert result.blocked_reason is None
     assert len(result.warnings) == 1
@@ -224,10 +224,10 @@ def test_different_plant_extension_digit_warns_not_blocks():
 
 def test_multiple_warnings_can_combine():
     first = make_carton(
-        sscc="086001571120000012", production_date="2026-03-23", packing_slip_number="100495"
+        sscc="086001571120000012", production_date="260323", packing_slip_number="100495"
     )
     second = make_carton(
-        sscc="186001571120000029", production_date="2026-03-24", packing_slip_number="100600"
+        sscc="186001571120000029", production_date="260324", packing_slip_number="100600"
     )
     result = check_carton_for_pallet(second, [first], expected_count=5, pallet_test_mode=False)
     assert result.blocked_reason is None

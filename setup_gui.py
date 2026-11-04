@@ -17,12 +17,15 @@ Run with:
     python setup_gui.py
 """
 
+import argparse
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from src.backup import BackupError, REASON_MANUAL, create_backup, restore_backup, summarize_restore
 from src.settings import JAMAICA_LABEL_TRAXX_DSN, load_settings, save_settings
+from src.setup_access import SetupAccessLevel
 from src.sscc import (
     SSCCGenerator,
     archive_and_reset_state_file,
@@ -60,26 +63,90 @@ def validate_extension_digit(raw: str) -> str:
 
 
 class SetupGUI(tk.Tk):
-    def __init__(self):
+    def __init__(self, access_level: SetupAccessLevel = SetupAccessLevel.Standard):
         super().__init__()
         self.title("BarBell Setup")
-        self.resizable(False, False)
+        self.resizable(False, True)  # height can be changed (the form scrolls); width is fixed
+
+        # Which password got us here (the main window passes it on launch -
+        # see BarBellApp._prompt_setup_password). Both levels get identical
+        # Setup functionality today; admin-only features can branch on
+        # is_admin later. Running this file directly means Standard.
+        self.access_level = access_level
 
         self.settings = load_settings()
 
+        self._build_scroll_area()
         self._build_label_traxx_section()
         self._build_output_section()
         self._build_gs1_section()
         self._build_counter_section()
         self._build_demo_section()
+        self._build_backup_section()
         self._build_buttons()
 
         self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
+        self._fit_window()
+
+    @property
+    def is_admin(self) -> bool:
+        return self.access_level is SetupAccessLevel.Admin
 
     # --- widget layout -----------------------------------------------------
 
+    def _build_scroll_area(self):
+        """The sections live in a scrollable body (self.body) so the whole form
+        is reachable on any screen; the Save Settings bar is pinned to the
+        bottom outside it, so it's always visible."""
+        self._button_bar = ttk.Frame(self, padding=10)
+        self._button_bar.pack(side="bottom", fill="x")
+
+        container = ttk.Frame(self)
+        container.pack(side="top", fill="both", expand=True)
+        self._canvas = tk.Canvas(
+            container, highlightthickness=0, borderwidth=0,
+            background=ttk.Style(self).lookup("TFrame", "background") or self.cget("background"),
+        )
+        self._scrollbar = ttk.Scrollbar(container, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self.body = ttk.Frame(self._canvas)
+        self._body_window = self._canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind(
+            "<Configure>", lambda _e: self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        )
+        self._canvas.bind(
+            "<Configure>", lambda e: self._canvas.itemconfigure(self._body_window, width=e.width)
+        )
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        first, last = self._canvas.yview()
+        if (first, last) != (0.0, 1.0):  # only scroll when there's something to scroll to
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _fit_window(self):
+        """Sizes the window to the form, capped to the screen so it never runs
+        off the bottom (the scrollbar covers the rest)."""
+        self.update_idletasks()
+        self._canvas.configure(width=self.body.winfo_reqwidth())
+        room = self.winfo_screenheight() - 160  # title bar, taskbar, Save bar
+        self._canvas.configure(height=min(self.body.winfo_reqheight(), max(300, room)))
+
+    def _note(self, parent, text):
+        """A small explanatory note that wraps to the full width of the section
+        it sits in (re-wrapping if that width changes), so it takes fewer lines
+        than hand-broken text. Place it with grid()/pack() as usual."""
+        label = ttk.Label(parent, text=text, justify="left", font=("", 8), wraplength=700)
+        parent.bind(
+            "<Configure>", lambda e: label.config(wraplength=max(200, e.width - 30)), add="+"
+        )
+        return label
+
     def _build_label_traxx_section(self):
-        frame = ttk.LabelFrame(self, text="Label Traxx Connection", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Label Traxx Connection", padding=10)
         frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
         frame.columnconfigure(1, weight=1)
 
@@ -104,21 +171,17 @@ class SetupGUI(tk.Tk):
         # each plant has its own prefix/extension digit/counter file (see
         # Settings.jamaica_*, QUESTIONS.md #19) so they can never collide.
         self.plant_combobox.bind("<<ComboboxSelected>>", self._on_plant_changed)
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                "Selects which plant's Windows ODBC DSN to connect to - both DSNs must\n"
-                "already exist in this machine's ODBC Data Source Administrator; Setup\n"
-                "only picks between them. Username/password are unaffected - both plants\n"
-                "share the same Label Traxx login. Takes effect the next time BarBell is\n"
-                "started. You can also type a DSN name directly if it's not in the list."
-            ),
-            justify="left",
-            font=("", 8),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            "Selects which plant's Windows ODBC DSN to connect to - both DSNs must already exist "
+            "in this machine's ODBC Data Source Administrator; Setup only picks between them. "
+            "Username/password are unaffected - both plants share the same Label Traxx login. "
+            "Takes effect the next time BarBell is started. You can also type a DSN name directly "
+            "if it's not in the list.",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
     def _build_output_section(self):
-        frame = ttk.LabelFrame(self, text="Label Output", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Label Output", padding=10)
         frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 5))
         frame.columnconfigure(1, weight=1)
 
@@ -130,7 +193,7 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Browse...", command=self._browse_output_dir).grid(row=0, column=2)
 
     def _build_gs1_section(self):
-        self.gs1_frame = ttk.LabelFrame(self, text="GS1 / SSCC Configuration", padding=10)
+        self.gs1_frame = ttk.LabelFrame(self.body, text="GS1 / SSCC Configuration", padding=10)
         self.gs1_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
         self.gs1_frame.columnconfigure(1, weight=1)
         frame = self.gs1_frame
@@ -161,7 +224,7 @@ class SetupGUI(tk.Tk):
         ttk.Button(frame, text="Browse...", command=self._browse_state_file).grid(row=3, column=2)
 
     def _build_counter_section(self):
-        frame = ttk.LabelFrame(self, text="SSCC Counter Status", padding=10)
+        frame = ttk.LabelFrame(self.body, text="SSCC Counter Status", padding=10)
         frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         frame.columnconfigure(1, weight=1)
 
@@ -183,28 +246,70 @@ class SetupGUI(tk.Tk):
         self.reset_button.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _build_demo_section(self):
-        frame = ttk.LabelFrame(self, text="Demo Mode", padding=10)
+        frame = ttk.LabelFrame(self.body, text="Demo Mode", padding=10)
         frame.grid(row=4, column=0, sticky="ew", padx=10, pady=5)
 
         self.demo_mode_var = tk.BooleanVar(value=self.settings.demo_mode)
         ttk.Checkbutton(frame, text="Run as Demo", variable=self.demo_mode_var).pack(anchor="w")
-        ttk.Label(
+        self._note(
             frame,
-            text=(
-                "Runs entirely on self-contained sample data - no Label Traxx/ODBC or\n"
-                "other network calls at all. Safe to use with no network access. Demo\n"
-                "runs are logged to a separate database and CSVs are prefixed \"DEMO_\",\n"
-                "so they never mix with real data. The main window shows an unmistakable\n"
-                "DEMO MODE banner whenever this is on. Takes effect the next time BarBell\n"
-                "is started."
-            ),
-            justify="left",
-            font=("", 8),
-        ).pack(anchor="w", pady=(4, 0))
+            "Runs entirely on self-contained sample data - no Label Traxx/ODBC or other network "
+            "calls at all. Safe to use with no network access. Demo runs are logged to a separate "
+            "database and CSVs are prefixed \"DEMO_\", so they never mix with real data. The main "
+            "window shows an unmistakable DEMO MODE banner whenever this is on. Takes effect the "
+            "next time BarBell is started.",
+        ).pack(fill="x", pady=(4, 0))
+
+        self.disable_test_mode_var = tk.BooleanVar(value=self.settings.disable_test_mode_checkbox)
+        ttk.Checkbutton(
+            frame,
+            text="Disable Test Mode checkbox on main form",
+            variable=self.disable_test_mode_var,
+        ).pack(anchor="w", pady=(10, 0))
+        self._note(
+            frame,
+            "When checked, the Test mode checkbox on the main form is turned off and greyed out. "
+            "Takes effect the next time BarBell is started. (Demo Mode still forces Test mode on, "
+            "so a demo can never issue a real SSCC.)",
+        ).pack(fill="x", pady=(2, 0))
+
+    def _build_backup_section(self):
+        frame = ttk.LabelFrame(self.body, text="Backup and Restore", padding=10)
+        frame.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Backup directory:").grid(row=0, column=0, sticky="w")
+        self.backup_dir_var = tk.StringVar(value=self.settings.backup_dir)
+        ttk.Entry(frame, textvariable=self.backup_dir_var, width=45).grid(
+            row=0, column=1, sticky="ew", padx=5
+        )
+        ttk.Button(frame, text="Browse...", command=self._browse_backup_dir).grid(row=0, column=2)
+
+        self._note(
+            frame,
+            f"BarBell backs up the database and both SSCC counters when it closes (keeping the last "
+            f"{self.settings.backup_keep_count}; skipped if nothing changed). Leave blank to turn "
+            "backups off. Choose a folder on another drive or a network share - not inside "
+            "OneDrive, which can corrupt a live database.",
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(buttons, text="Back Up Now", command=self._backup_now).pack(side="left")
+        self.restore_button = ttk.Button(
+            buttons, text="Restore from Backup...", command=self._restore_from_backup
+        )
+        self.restore_button.pack(side="left", padx=(8, 0))
+        if not self.is_admin:
+            # Restore replaces live data - reserved for the administrator
+            # Setup password (see src/setup_access.py).
+            self.restore_button.config(state="disabled")
+            ttk.Label(
+                buttons, text="Restore needs the administrator Setup password.", font=("", 8)
+            ).pack(side="left", padx=(10, 0))
 
     def _build_buttons(self):
-        frame = ttk.Frame(self, padding=10)
-        frame.grid(row=5, column=0, sticky="ew")
+        frame = self._button_bar  # pinned below the scrolling form (see _build_scroll_area)
         ttk.Button(frame, text="Save Settings", command=self._save).pack(side="right")
 
     # --- actions -------------------------------------------------------
@@ -244,6 +349,86 @@ class SetupGUI(tk.Tk):
         chosen = filedialog.askdirectory(initialdir=self.output_dir_var.get() or str(APP_ROOT))
         if chosen:
             self.output_dir_var.set(chosen)
+
+    def _browse_backup_dir(self):
+        chosen = filedialog.askdirectory(initialdir=self.backup_dir_var.get() or str(APP_ROOT))
+        if chosen:
+            self.backup_dir_var.set(chosen)
+
+    def _backup_dir_or_complain(self):
+        folder = self.backup_dir_var.get().strip()
+        if not folder:
+            messagebox.showinfo("Backup", "Choose a backup directory first.")
+            return None
+        return Path(folder)
+
+    def _backup_now(self):
+        folder = self._backup_dir_or_complain()
+        if folder is None:
+            return
+        try:
+            result = create_backup(self.settings, folder, REASON_MANUAL)
+        except BackupError as exc:
+            messagebox.showerror("Backup failed", str(exc))
+            return
+        messagebox.showinfo("Backup", result.message)
+
+    def _restore_from_backup(self):
+        """Pick a backup folder, show exactly what would change, confirm, restore."""
+        dest_root = self._backup_dir_or_complain()
+        if dest_root is None:
+            return
+        chosen = filedialog.askdirectory(
+            initialdir=str(dest_root), title="Choose the backup folder to restore"
+        )
+        if not chosen:
+            return
+        try:
+            summary = summarize_restore(chosen, self.settings)
+        except BackupError as exc:
+            messagebox.showerror("Can't restore from that folder", str(exc))
+            return
+
+        counter_lines = "\n".join(
+            f"  {plant.title()}: backup {c['backup'] if c['backup'] is not None else '-'}, "
+            f"now {c['current'] if c['current'] is not None else '-'}"
+            for plant, c in summary.counters.items()
+        )
+        lost = (
+            f"\n{summary.only_in_current} carton/pallet label(s) issued since this backup will no "
+            "longer appear in history (they stay in the safety backup)."
+            if summary.only_in_current else ""
+        )
+        if not messagebox.askyesno(
+            "Confirm restore",
+            f"Restore the database from the backup made {summary.created_at.replace('T', ' ')} "
+            f"(BarBell {summary.app_version})?\n\n"
+            f"It holds {summary.cartons_and_pallets_in_backup} carton/pallet SSCC(s).{lost}\n\n"
+            f"SSCC counters (last serial issued):\n{counter_lines}\n"
+            "A counter is never moved backwards - each ends at the highest of the backup's, the "
+            "current one, and what the restored database shows was issued.\n\n"
+            "A safety backup of the current data is made first. Close the main BarBell window "
+            "before restoring. Continue?",
+            icon="warning",
+        ):
+            return
+        try:
+            result = restore_backup(chosen, self.settings, dest_root)
+        except BackupError as exc:
+            messagebox.showerror("Restore failed", str(exc))
+            return
+        self._refresh_counter_status()
+        raised = "".join(
+            f"\n  {plant.title()} counter raised {old if old is not None else '-'} -> {new}"
+            for plant, (old, new) in result.counters_raised.items()
+        )
+        messagebox.showinfo(
+            "Restore complete",
+            "Database restored."
+            + (f"\nSafety backup of the previous data: {result.safety_backup}" if result.safety_backup else "")
+            + raised
+            + "\n\nRestart BarBell before continuing.",
+        )
 
     def _browse_state_file(self):
         chosen = filedialog.asksaveasfilename(
@@ -363,6 +548,22 @@ class SetupGUI(tk.Tk):
             messagebox.showerror("Invalid setting", "SSCC counter file location is required.")
             return
 
+        backup_dir = self.backup_dir_var.get().strip()
+        if backup_dir:
+            try:
+                Path(backup_dir).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                messagebox.showerror("Invalid setting", f"Can't use that backup directory: {exc}")
+                return
+            if "onedrive" in backup_dir.lower() and not messagebox.askyesno(
+                "Backup directory is in OneDrive",
+                "That folder is inside OneDrive. OneDrive syncing a live database can corrupt it, "
+                "and a backup that syncs away or conflicts is little protection.\n\n"
+                "Another drive or a network share is safer. Use it anyway?",
+                icon="warning",
+            ):
+                return
+
         # A typed value that happens to match a preset label resolves to that
         # DSN; anything else (a custom DSN name, or blank) is used as typed -
         # blank means "fall back to LT_DSN from .env" (see src/settings.py).
@@ -395,6 +596,8 @@ class SetupGUI(tk.Tk):
             self.settings,
             output_dir=output_dir,
             demo_mode=self.demo_mode_var.get(),
+            disable_test_mode_checkbox=self.disable_test_mode_var.get(),
+            backup_dir=backup_dir,
             label_traxx_dsn=label_traxx_dsn,
             **plant_gs1_fields,
         )
@@ -406,4 +609,11 @@ class SetupGUI(tk.Tk):
 
 
 if __name__ == "__main__":
-    SetupGUI().mainloop()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--access-level",
+        choices=[level.value for level in SetupAccessLevel],
+        default=SetupAccessLevel.Standard.value,
+    )
+    args = parser.parse_args()
+    SetupGUI(SetupAccessLevel(args.access_level)).mainloop()

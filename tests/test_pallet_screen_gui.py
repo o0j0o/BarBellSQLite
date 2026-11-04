@@ -1,6 +1,11 @@
 import pytest
 
-from src.db.local_store import fetch_label_history, find_carton_by_sscc, record_generation_run
+from src.db.local_store import (
+    create_pallet,
+    fetch_label_history,
+    find_carton_by_sscc,
+    record_generation_run,
+)
 from src.labels import LabelRow
 from src.sscc import SSCCGenerator
 
@@ -48,7 +53,7 @@ def make_carton_row(sscc, job_number="122984", **overrides):
         job_number=job_number, packing_slip_number="100495", customer_number="J00005",
         customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
         item_description="desc", quantity=10000, batch="12298447388",
-        production_date="2026-03-23", sscc=sscc, gtin="00051096184921",
+        production_date="260323", sscc=sscc, gtin="00051096184921",
         package_index=1, label_copy_index=1,
     )
     defaults.update(overrides)
@@ -238,8 +243,8 @@ class TestScanning:
         seed_cartons(
             db_path,
             [
-                make_carton_row("008600157112000128", production_date="2026-03-23"),
-                make_carton_row("008600157112000296", production_date="2026-03-24"),
+                make_carton_row("008600157112000128", production_date="260323"),
+                make_carton_row("008600157112000296", production_date="260324"),
             ],
         )
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
@@ -258,8 +263,8 @@ class TestScanning:
         seed_cartons(
             db_path,
             [
-                make_carton_row("008600157112000128", production_date="2026-03-23"),
-                make_carton_row("008600157112000296", production_date="2026-03-24"),
+                make_carton_row("008600157112000128", production_date="260323"),
+                make_carton_row("008600157112000296", production_date="260324"),
             ],
         )
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)
@@ -413,6 +418,54 @@ class TestGenerate:
         assert len(errors) == 1
 
 
+class TestScanMessageAfterGenerate:
+    """The scan feedback line (green "added" / red error) must not outlive
+    the pallet it was about: after a successful Generate the screen is fresh
+    and empty, so the old message goes too."""
+
+    CONTENTS_BARCODE = "(02)00051096184921(11)260323(37)10000(10)12298447388"
+    CONTENTS_MESSAGE = "That is the contents barcode. Scan the lower SSCC barcode."
+
+    def _label_texts(self, widget):
+        texts = []
+        for child in widget.winfo_children():
+            if child.winfo_class() in ("TLabel", "Label"):
+                texts.append(str(child.cget("text")))
+            texts.extend(self._label_texts(child))
+        return texts
+
+    def _scan_then_misscan(self, win, db_path):
+        seed_cartons(db_path, [make_carton_row("008600157112000128")])
+        _entries(win)[0].insert(0, "1")
+        win.update()
+        scan(win, "008600157112000128")
+        scan(win, self.CONTENTS_BARCODE)  # the common mis-scan -> red message
+        assert self.CONTENTS_MESSAGE in self._label_texts(win)
+
+    def test_the_old_scan_message_is_cleared_once_the_pallet_is_generated(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda *a, **k: None)
+        self._scan_then_misscan(win, db_path)
+
+        _button(win, "Generate Pallet Label").invoke()
+        win.update()
+
+        texts = self._label_texts(win)
+        assert self.CONTENTS_MESSAGE not in texts
+        assert not any(t.endswith("added.") for t in texts)  # nor a stale green "added"
+
+    def test_the_message_stays_if_the_user_backs_out_of_generating(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: False)  # decline the confirmation
+        self._scan_then_misscan(win, db_path)
+
+        _button(win, "Generate Pallet Label").invoke()
+        win.update()
+
+        assert self.CONTENTS_MESSAGE in self._label_texts(win)  # nothing finished, nothing to clear
+
+
 class TestPreview:
     def test_preview_does_not_touch_the_sscc_counter_or_database(self, pallet_win, monkeypatch, tmp_path):
         win, db_path = pallet_win
@@ -467,3 +520,158 @@ class TestReturnToMainScreen:
         )
         _button(win, "Return to Main Screen").invoke()
         assert not win.winfo_exists()
+
+
+def _click_checkbox_cell(tree, iid):
+    bbox = tree.bbox(iid, "#1")
+    assert bbox, f"row {iid!r} isn't rendered/visible - call update() first"
+    tree.event_generate("<Button-1>", x=bbox[0] + bbox[2] // 2, y=bbox[1] + bbox[3] // 2)
+
+
+class TestCartonPicker:
+    """The "Select Carton SSCC..." fallback for when the scanner isn't working."""
+
+    SSCCS = ["008600157112000128", "008600157112000296", "008600157112000463"]
+
+    def _open_picker(self, win, expected="5"):
+        _entries(win)[0].insert(0, expected)
+        win.update()
+        _button(win, "Select Carton SSCC").invoke()
+        picker = win.winfo_children()[-1]
+        picker.update()
+        return picker, _find_treeview(picker)
+
+    def test_button_disabled_until_valid_count_entered(self, pallet_win):
+        win, _ = pallet_win
+        button = _button(win, "Select Carton SSCC")
+        assert str(button.cget("state")) == "disabled"
+
+        _entries(win)[0].insert(0, "3")
+        win.update()
+        assert str(button.cget("state")) == "normal"
+
+    def test_lists_only_cartons_not_on_a_pallet_with_description_and_batch(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [
+            make_carton_row(s, item_description="JWN White Rum 750ml", package_index=i)
+            for i, s in enumerate(self.SSCCS, start=1)
+        ])
+        create_pallet(
+            carton_ssccs=[self.SSCCS[0]], job_number="122984", quantity=10000,
+            production_date="260323", packing_slip_number="100495",
+            pallet_sscc="008600157112099999", carton_count=1, db_path=db_path,
+        )
+
+        _, tree = self._open_picker(win)
+
+        assert list(tree.get_children()) == self.SSCCS[1:]
+        values = tree.item(self.SSCCS[1], "values")
+        assert values[1:4] == (self.SSCCS[1], "JWN White Rum 750ml", "12298447388")
+
+    def test_checked_cartons_are_added_and_leave_the_list(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        picker, tree = self._open_picker(win)
+
+        for sscc in self.SSCCS[:2]:
+            _click_checkbox_cell(tree, sscc)
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+        picker.update()
+
+        pallet_tree = _find_treeview(win, exclude=(tree,))
+        assert list(pallet_tree.get_children()) == self.SSCCS[:2]
+        assert list(tree.get_children()) == self.SSCCS[2:]
+
+    def test_adding_nothing_checked_changes_nothing(self, pallet_win, monkeypatch):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(self.SSCCS[0])])
+        infos = []
+        monkeypatch.setattr("tkinter.messagebox.showinfo", lambda title, msg, **k: infos.append(msg))
+        picker, tree = self._open_picker(win)
+
+        _button(picker, "Add Selected").invoke()
+
+        assert len(infos) == 1
+        assert len(_find_treeview(win, exclude=(tree,)).get_children()) == 0
+
+    def test_exceeding_expected_count_adds_up_to_the_limit_and_reports_the_rest(
+        self, pallet_win, monkeypatch
+    ):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        errors = []
+        monkeypatch.setattr("tkinter.messagebox.showerror", lambda title, msg, **k: errors.append(msg))
+        picker, tree = self._open_picker(win, expected="2")
+
+        for sscc in self.SSCCS:
+            _click_checkbox_cell(tree, sscc)
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+
+        assert len(_find_treeview(win, exclude=(tree,)).get_children()) == 2
+        assert len(errors) == 1 and "Added 2 of 3" in errors[0]
+
+    def test_once_a_carton_is_on_the_pallet_only_its_batch_is_listed(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(self.SSCCS[0]), make_carton_row(self.SSCCS[1])])
+        seed_cartons(
+            db_path,
+            [make_carton_row(self.SSCCS[2], batch="99999947388", job_number="999999")],
+        )
+        picker, tree = self._open_picker(win)
+        assert set(tree.get_children()) == set(self.SSCCS)  # nothing on the pallet yet
+
+        _click_checkbox_cell(tree, self.SSCCS[0])
+        picker.update()
+        _button(picker, "Add Selected").invoke()
+        picker.update()
+
+        assert list(tree.get_children()) == [self.SSCCS[1]]  # other batch is hidden
+
+    def test_sscc_filter_narrows_the_list(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(db_path, [make_carton_row(s, package_index=i) for i, s in enumerate(self.SSCCS, 1)])
+        picker, tree = self._open_picker(win)
+
+        _entries(picker)[1].insert(0, "0296")
+        picker.update()
+
+        assert list(tree.get_children()) == [self.SSCCS[1]]
+
+
+class TestPalletContentsAIs:
+    """Pallet label: (02) GTIN, and (37) is the TOTAL count of product on the
+    pallet - not the number of cartons."""
+
+    def test_pallet_preview_shows_ai_02_and_the_total_product_count(self, pallet_win):
+        win, db_path = pallet_win
+        seed_cartons(
+            db_path,
+            [
+                make_carton_row("008600157112000128", quantity=27000, package_index=1),
+                make_carton_row("008600157112000296", quantity=7000, package_index=2),
+            ],
+        )
+        _entries(win)[0].insert(0, "2")
+        win.update()
+        scan(win, "008600157112000128")
+        scan(win, "008600157112000296")
+        before = set(win.winfo_children())
+
+        _button(win, "Preview Barcode").invoke()
+
+        preview = next(iter(set(win.winfo_children()) - before))
+        texts = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() in ("TLabel", "Label"):
+                    texts.append(str(child.cget("text")))
+                walk(child)
+
+        walk(preview)
+        line = next(t for t in texts if t.startswith("(0") and "(37)" in t)
+        assert line.startswith("(02)00051096184921(11)260323(37)34000(10)")  # 27,000 + 7,000 product, not "2" cartons
+        assert "(37)2(10)" not in line
+        preview.destroy()

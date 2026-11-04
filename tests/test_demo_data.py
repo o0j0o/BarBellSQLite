@@ -78,7 +78,7 @@ def test_assemble_label_rows_end_to_end_against_demo_connection():
         line_item=line_item,
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-09-16",
+        production_date="260916",
         test_mode=True,
     )
 
@@ -102,6 +102,6 @@ def test_assemble_label_rows_blocks_on_demo_products_missing_gtin():
             line_item=line_item,
             units_per_package=9000,
             labels_per_package=1,
-            production_date="2026-09-16",
+            production_date="260916",
             test_mode=True,
         )

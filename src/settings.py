@@ -13,6 +13,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from src.setup_access import STANDARD_SETUP_PASSWORD_DEFAULT
+
 DEFAULT_SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
 # The Jamaica Label Traxx DSN name (see label_traxx_dsn below) - the single
@@ -31,7 +33,7 @@ class Settings:
     # Soft deterrent so Setup isn't one accidental click away from the main
     # app's About dialog - not real access control (anyone who can edit this
     # file can read or change it), just a "are you sure you meant to" gate.
-    setup_password: str = "change4GOOD"
+    setup_password: str = STANDARD_SETUP_PASSWORD_DEFAULT  # see src/setup_access.py
     # Beta-only measure: CLC is still registering GTINs into Label Traxx, so
     # Product.BC_Start can't yet be treated as the sole authoritative source -
     # manual entry stays available for every run, not just when BC_Start is
@@ -55,6 +57,20 @@ class Settings:
     # BarBell - like every other setting here, it takes effect on next start.
     demo_mode: bool = False
     demo_db_file: str = "barbell_demo.db"
+    # Set in Setup ("Disable Test Mode checkbox on main form"): when True the
+    # main form's Test mode checkbox starts unchecked and greyed out. Read
+    # once at startup like every other setting. Demo Mode still wins - it
+    # forces Test mode on and locked so a demo can never issue a real SSCC.
+    disable_test_mode_checkbox: bool = False
+    # Where BarBell keeps its backups (see src/backup.py). Empty = backups are
+    # off until a folder is chosen in Setup. Best on another drive or a
+    # network share, NOT inside OneDrive (it syncing live SQLite files can
+    # corrupt them). backup_keep_count is how many rolling backups to keep.
+    backup_dir: str = ""
+    backup_keep_count: int = 10
+    # Optional per-machine override for where Help > Help goes (an http/https
+    # address). Empty = the built-in address in src/help_link.py.
+    help_url: str = ""
     demo_audit_log_file: str = "demo_gtin_audit_log.jsonl"
     # Which plant's Label Traxx to connect to - the Windows ODBC DSN name
     # (e.g. "LT64" for Barbados, "LCJ JAM" for Jamaica; both DSNs must already
@@ -82,6 +98,11 @@ class Settings:
         an unset or any other DSN, so an install that's never touched
         Setup keeps behaving exactly as it always has."""
         return self.label_traxx_dsn == JAMAICA_LABEL_TRAXX_DSN
+
+    @property
+    def company_name(self) -> str:
+        """The legal entity name for the active plant, printed on reports."""
+        return "Label Crafts Jamaica Ltd." if self.is_jamaica_plant else "Caribbean Label Crafts Ltd."
 
     @property
     def active_gs1_company_prefix(self) -> str:

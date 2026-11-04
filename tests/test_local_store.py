@@ -25,7 +25,7 @@ def make_rows(job_number="122984", sscc_prefix="086001571120000001"):
                     item_description="233458 - JWN White O/P Rum B 750Ml USA - PS",
                     quantity=qty,
                     batch="12298447388",
-                    production_date="2026-03-23",
+                    production_date="260323",
                     sscc=sscc,
                     gtin="00051096184921",
                     package_index=package_index,
@@ -121,13 +121,13 @@ def test_fetch_label_history_filters_by_date(tmp_path):
     db_path = tmp_path / "barbell.db"
     rows = make_rows()
     for r in rows:
-        r.production_date = "2026-05-01"
+        r.production_date = "260501"
     record_generation_run(
         rows, units_per_package=27000, labels_per_package=2, test_mode=False, db_path=db_path
     )
 
-    assert len(fetch_label_history(db_path, date="2026-05-01")) == 4
-    assert len(fetch_label_history(db_path, date="2026-05-02")) == 0
+    assert len(fetch_label_history(db_path, date="260501")) == 4
+    assert len(fetch_label_history(db_path, date="260502")) == 0
 
 
 def test_fetch_label_history_on_fresh_db_is_empty(tmp_path):
@@ -276,7 +276,7 @@ def _seed_ssccs(db_path, ssccs):
             LabelRow(
                 job_number="122984", packing_slip_number="100495", customer_number="J00005",
                 customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
-                item_description="desc", quantity=100, batch="batch", production_date="2026-03-23",
+                item_description="desc", quantity=100, batch="batch", production_date="260323",
                 sscc=sscc, gtin="00051096184921", package_index=i, label_copy_index=1,
             )
         )

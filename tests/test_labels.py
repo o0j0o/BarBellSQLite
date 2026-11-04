@@ -210,7 +210,7 @@ def test_assemble_label_rows_end_to_end(tmp_path):
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=2,
-        production_date="2026-03-23",
+        production_date="260323",
     )
 
     # 21 packages (20x27000 + 1x7000) x 2 label copies each = 42 rows
@@ -224,7 +224,7 @@ def test_assemble_label_rows_end_to_end(tmp_path):
     assert first.quantity == 27000
     assert first.package_index == 1
     assert first.label_copy_index == 1
-    assert first.production_date == "2026-03-23"
+    assert first.production_date == "260323"
     assert first.gtin == VALID_GTIN  # sourced from Product.BC_Start
 
     # both copies of package 1 share the same SSCC ...
@@ -263,7 +263,7 @@ def test_assemble_label_rows_test_mode_never_touches_the_real_counter(tmp_path):
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=2,
-        production_date="2026-03-23",
+        production_date="260323",
         test_mode=True,
     )
 
@@ -293,7 +293,7 @@ def test_assemble_label_rows_blocks_on_missing_gtin(tmp_path):
             line_item=make_line_item(),
             units_per_package=27000,
             labels_per_package=1,
-            production_date="2026-03-23",
+            production_date="260323",
         )
     # the block happens before any SSCC is issued - counter still at its initialized value
     assert json.loads(state_file.read_text())["last_serial"] == 9
@@ -308,7 +308,7 @@ def test_assemble_label_rows_requires_a_generator_unless_test_mode():
             line_item=make_line_item(),
             units_per_package=27000,
             labels_per_package=1,
-            production_date="2026-03-23",
+            production_date="260323",
         )
 
 
@@ -324,7 +324,7 @@ def test_assemble_label_rows_uses_gtin_override_when_given():
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-03-23",
+        production_date="260323",
         gtin_override="00000012345670",
         test_mode=True,
     )
@@ -341,7 +341,7 @@ def test_assemble_label_rows_revalidates_gtin_override():
             line_item=make_line_item(),
             units_per_package=27000,
             labels_per_package=1,
-            production_date="2026-03-23",
+            production_date="260323",
             gtin_override="not-a-gtin",
             test_mode=True,
         )
@@ -356,7 +356,7 @@ def test_assemble_label_rows_writes_audit_record_for_label_traxx_source(tmp_path
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-03-23",
+        production_date="260323",
         audit_log_file=log_file,
         test_mode=True,
     )
@@ -379,7 +379,7 @@ def test_assemble_label_rows_writes_audit_record_for_manual_override_source(tmp_
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-03-23",
+        production_date="260323",
         gtin_override="00000012345670",  # different from BC_Start
         audit_log_file=log_file,
         test_mode=True,
@@ -399,7 +399,7 @@ def test_assemble_label_rows_writes_audit_record_for_manual_empty_source(tmp_pat
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-03-23",
+        production_date="260323",
         gtin_override="00000012345670",
         audit_log_file=log_file,
         test_mode=True,
@@ -419,7 +419,7 @@ def test_assemble_label_rows_skips_audit_logging_when_no_log_file_given(tmp_path
         line_item=make_line_item(),
         units_per_package=27000,
         labels_per_package=1,
-        production_date="2026-03-23",
+        production_date="260323",
         test_mode=True,
     )
     assert list(tmp_path.iterdir()) == []

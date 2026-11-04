@@ -43,6 +43,11 @@ pallet it's been scanned onto, carton_count (pallet rows only) records how
 many cartons it actually carries. See QUESTIONS.md #18 and
 barbell_gui.py's Pallet screen.
 
+Production dates are stored as YYMMDD (src/dates.py). Databases from before
+that hold YYYY-MM-DD; _migrate_production_dates() rewrites them in place the
+first time such a database is opened (after backing the file up), and every
+write path below normalises its input, so the two forms never coexist.
+
 labels.production_date/packing_slip_number are per-row snapshots, separate
 from jobs.production_date/packing_slip_number (which stay the current,
 possibly-since-overwritten value for a job_number, unchanged in behaviour
@@ -61,6 +66,8 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from src.dates import normalize_production_date
 
 STATUS_ORIGINAL = "original"
 STATUS_VOID = "void"
@@ -155,21 +162,21 @@ def _backup_db_file(db_path: Path) -> Path | None:
     return backup_path
 
 
-def _migrate_labels_table(conn: sqlite3.Connection, db_path: Path) -> None:
+def _migrate_labels_table(conn: sqlite3.Connection, db_path: Path) -> bool:
     """
     Adds any labels columns missing from an existing database (one from
     before the Pallet Labels feature). Safe to call every time a connection
     is opened: a no-op, and no backup taken, once the columns already
     exist - so running it repeatedly (every app start) never re-backs-up or
     re-alters anything. Backs up the .db file only when it's actually about
-    to change the schema.
+    to change the schema. Returns True if it took that backup.
     """
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(labels)").fetchall()}
     missing = [
         (name, ddl) for name, ddl in _LABELS_MIGRATION_COLUMNS if name not in existing_columns
     ]
     if not missing:
-        return
+        return False
 
     _backup_db_file(db_path)
     for name, ddl in missing:
@@ -193,6 +200,42 @@ def _migrate_labels_table(conn: sqlite3.Connection, db_path: Path) -> None:
             "WHERE packing_slip_number IS NULL"
         )
     conn.commit()
+    return True
+
+
+_LEGACY_ISO_DATE_LIKE = "____-__-__"  # SQL LIKE: YYYY-MM-DD, '_' = any one character
+
+
+def _migrate_production_dates(
+    conn: sqlite3.Connection, db_path: Path, already_backed_up: bool = False
+) -> None:
+    """
+    Rewrites any production_date still in the old YYYY-MM-DD form (jobs and
+    labels) to YYMMDD. A no-op - and no backup taken - once none are left, so
+    it's safe to run every time a connection opens. Backs up the .db file
+    only when it's actually about to change data, and not again if this same
+    open already backed it up for the labels schema migration.
+    """
+    has_legacy = any(
+        conn.execute(
+            f"SELECT 1 FROM {table} WHERE production_date LIKE ? LIMIT 1", (_LEGACY_ISO_DATE_LIKE,)
+        ).fetchone()
+        for table in ("jobs", "labels")
+    )
+    if not has_legacy:
+        return
+
+    if not already_backed_up:
+        _backup_db_file(db_path)
+    for table in ("jobs", "labels"):
+        # 'YYYY-MM-DD' -> characters 3-4 (YY), 6-7 (MM), 9-10 (DD)
+        conn.execute(
+            f"UPDATE {table} SET production_date = "
+            "substr(production_date, 3, 2) || substr(production_date, 6, 2) || substr(production_date, 9, 2) "
+            "WHERE production_date LIKE ?",
+            (_LEGACY_ISO_DATE_LIKE,),
+        )
+    conn.commit()
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -201,7 +244,8 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
-    _migrate_labels_table(conn, db_path)
+    backed_up = _migrate_labels_table(conn, db_path)
+    _migrate_production_dates(conn, db_path, already_backed_up=backed_up)
     return conn
 
 
@@ -282,6 +326,7 @@ def record_generation_run(
         raise ValueError("rows is empty - nothing to record")
 
     first = rows[0]
+    first_production_date = normalize_production_date(first.production_date)
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
     try:
@@ -318,7 +363,7 @@ def record_generation_run(
                 first.customer_number,
                 first.customer_name,
                 first.batch,
-                first.production_date,
+                first_production_date,
                 first.gtin,
                 units_per_package,
                 labels_per_package,
@@ -341,7 +386,7 @@ def record_generation_run(
                 """,
                 (
                     r.job_number, r.sscc, r.package_index, r.label_copy_index, r.quantity, now,
-                    r.production_date, r.packing_slip_number,
+                    normalize_production_date(r.production_date), r.packing_slip_number,
                 ),
             )
             label_ids.append(cur.lastrowid)
@@ -380,6 +425,10 @@ def fetch_label_history(
             clauses.append("j.job_number = ?")
             params.append(job_number)
         if date:
+            try:
+                date = normalize_production_date(date)  # accepts YYMMDD (or the old YYYY-MM-DD)
+            except ValueError:
+                pass  # not a valid date - match it as typed (finds nothing)
             clauses.append("j.production_date = ?")
             params.append(date)
         if sscc_contains:
@@ -557,6 +606,88 @@ def find_carton_by_sscc(sscc: str, db_path: Path | str) -> CartonInfo | None:
         conn.close()
 
 
+@dataclass
+class AvailableCarton:
+    """One carton that could still go onto a pallet - what the Pallet
+    screen's "Select Carton SSCC" list shows for each row."""
+
+    sscc: str
+    job_number: str
+    item_number: str
+    description: str
+    batch: str
+    gtin: str | None
+    quantity: int
+    production_date: str | None
+
+
+def list_available_cartons(
+    db_path: Path | str,
+    test_mode: bool,
+    job_number: str | None = None,
+    sscc_contains: str | None = None,
+    batch: str | None = None,
+    gtin: str | None = None,
+    exclude_ssccs=(),
+) -> list[AvailableCarton]:
+    """
+    Cartons not yet on any pallet and not voided, one entry per SSCC (print
+    copies and reprints collapse), for picking by hand instead of scanning.
+    Only cartons of the given test/production kind are listed, since the two
+    can never share a pallet. batch/gtin narrow the list to what could join
+    a pallet that already has cartons on it; exclude_ssccs hides cartons
+    already picked on the screen but not yet saved to a pallet. Newest run
+    first, cartons in sequence order within a run.
+    """
+    conn = _connect(db_path)
+    try:
+        clauses = [
+            "l.label_type = 'CARTON'", "l.pallet_sscc IS NULL", "l.status != 'void'",
+            "j.test_mode = ?",
+        ]
+        params: list = [int(test_mode)]
+        if job_number:
+            clauses.append("j.job_number = ?")
+            params.append(job_number)
+        if sscc_contains:
+            escaped = (
+                sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            clauses.append("l.sscc LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        if batch:
+            clauses.append("j.batch = ?")
+            params.append(batch)
+        if gtin:
+            clauses.append("j.gtin = ?")
+            params.append(gtin)
+        exclude = list(exclude_ssccs)
+        if exclude:
+            clauses.append(f"l.sscc NOT IN ({','.join('?' * len(exclude))})")
+            params.extend(exclude)
+
+        cur = conn.execute(
+            f"""
+            SELECT l.sscc, j.job_number, j.item_number, j.item_description, j.batch, j.gtin,
+                   l.quantity, COALESCE(l.production_date, j.production_date)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE {' AND '.join(clauses)}
+            GROUP BY l.sscc
+            ORDER BY MIN(l.created_at) DESC, MIN(l.id) ASC
+            """,
+            params,
+        )
+        return [
+            AvailableCarton(
+                sscc=r[0], job_number=r[1], item_number=r[2], description=r[3], batch=r[4],
+                gtin=r[5], quantity=r[6], production_date=r[7],
+            )
+            for r in cur.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
 def count_pallets(db_path: Path | str) -> int:
     """Distinct pallet SSCCs logged so far (both print copies of the same
     pallet count once) - used to pick a never-repeated sequence number for
@@ -597,6 +728,7 @@ def create_pallet(
     if not carton_ssccs:
         raise ValueError("carton_ssccs is empty - nothing to build a pallet from")
 
+    production_date = normalize_production_date(production_date)
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
     try:
@@ -633,6 +765,91 @@ def create_pallet(
         id_placeholders = ",".join("?" * len(new_ids))
         cur = conn.execute(f"{_JOIN_SELECT} WHERE l.id IN ({id_placeholders}) ORDER BY l.id", new_ids)
         return [_row_to_flat(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+@dataclass
+class PalletReportCarton:
+    """One carton on a pallet, as the Pallet Report prints it - the same
+    fields the carton's own label carries, so the report's small contents
+    barcode is built from exactly what the label's was."""
+
+    sscc: str
+    item_number: str
+    description: str
+    quantity: int
+    batch: str
+    gtin: str | None
+    production_date: str
+
+
+@dataclass
+class PalletReport:
+    pallet_sscc: str
+    job_number: str
+    packing_slip_number: str | None
+    production_date: str | None
+    test_mode: bool
+    created_at: str
+    cartons: list[PalletReportCarton]
+
+    @property
+    def total_quantity(self) -> int:
+        return sum(c.quantity for c in self.cartons)
+
+
+def fetch_pallet_report(pallet_sscc: str, db_path: Path | str) -> PalletReport:
+    """
+    Everything the Pallet Report needs for one pallet: the pallet's own row
+    plus one entry per carton linked to it (cartons.pallet_sscc), in the
+    order they were originally generated. A carton with several print copies
+    or a reprint appears once, not once per copy. Raises ValueError if
+    pallet_sscc isn't a pallet, or has been voided (a void frees every
+    carton, so there'd be nothing left to list).
+    """
+    conn = _connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            SELECT l.status, l.job_number, l.packing_slip_number,
+                   COALESCE(l.production_date, j.production_date), j.test_mode, l.created_at
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.sscc = ? AND l.label_type = 'PALLET'
+            ORDER BY l.id LIMIT 1
+            """,
+            (pallet_sscc,),
+        )
+        pallet = cur.fetchone()
+        if pallet is None:
+            raise ValueError(f"No pallet found with SSCC {pallet_sscc!r}")
+        status, job_number, packing_slip_number, production_date, test_mode, created_at = pallet
+        if status == STATUS_VOID:
+            raise ValueError(f"Pallet {pallet_sscc} has been voided - it no longer holds any cartons")
+
+        cur = conn.execute(
+            """
+            SELECT l.sscc, j.item_number, j.item_description, l.quantity, j.batch, j.gtin,
+                   COALESCE(l.production_date, j.production_date)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.pallet_sscc = ? AND l.label_type = 'CARTON'
+            GROUP BY l.sscc
+            ORDER BY MIN(l.id)
+            """,
+            (pallet_sscc,),
+        )
+        cartons = [
+            PalletReportCarton(
+                sscc=row[0], item_number=row[1], description=row[2], quantity=row[3],
+                batch=row[4], gtin=row[5], production_date=row[6],
+            )
+            for row in cur.fetchall()
+        ]
+        return PalletReport(
+            pallet_sscc=pallet_sscc, job_number=job_number,
+            packing_slip_number=packing_slip_number, production_date=production_date,
+            test_mode=bool(test_mode), created_at=created_at, cartons=cartons,
+        )
     finally:
         conn.close()
 

@@ -29,7 +29,6 @@ Run with:
     python generate_labels.py
 """
 
-import datetime
 import sys
 from pathlib import Path
 
@@ -37,9 +36,10 @@ from dotenv import load_dotenv
 
 from src.batch import build_batch_number
 from src.db.local_store import record_generation_run, write_flat_csv
+from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
-from src.gs1 import build_contents_element_string, build_sscc_element_string
+from src.gs1 import GTIN_AI_CARTON, build_contents_element_string, build_sscc_element_string
 from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
 from src.labels import (
     assemble_label_rows,
@@ -81,11 +81,11 @@ def prompt_int(text: str) -> int:
 
 
 def prompt_date(text: str) -> str:
-    raw = prompt(f"{text} (YYYY-MM-DD): ")
+    raw = prompt(f"{text} ({PRODUCTION_DATE_FORMAT}, e.g. {PRODUCTION_DATE_EXAMPLE}): ")
     try:
-        datetime.date.fromisoformat(raw)
+        parse_production_date(raw)
     except ValueError:
-        print(f"{raw!r} isn't a valid date in YYYY-MM-DD format.")
+        print(f"{raw!r} isn't a valid date in {PRODUCTION_DATE_FORMAT} format (e.g. {PRODUCTION_DATE_EXAMPLE}).")
         return prompt_date(text)
     return raw
 
@@ -199,7 +199,10 @@ def resolve_gtin(product, settings) -> str:
 
 def print_gs1_preview(gtin, production_date, first_package_qty, batch, sscc):
     print("\nGS1-128 element strings for package 1:")
-    print(f"  Contents: {build_contents_element_string(gtin, production_date, first_package_qty, batch)}")
+    print(
+        "  Contents: "
+        f"{build_contents_element_string(gtin, production_date, first_package_qty, batch, gtin_ai=GTIN_AI_CARTON)}"
+    )
     print(f"  SSCC:     {build_sscc_element_string(sscc)}")
 
 

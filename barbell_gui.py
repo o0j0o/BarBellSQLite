@@ -15,23 +15,30 @@ Run with:
 """
 
 import datetime
+import os
 import subprocess
 import sys
 import tkinter as tk
+import webbrowser
 import winsound
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from dotenv import load_dotenv
+from PIL import Image, ImageTk
 
+from src.backup import BackupError, REASON_EXIT, REASON_MANUAL, create_backup
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
+from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
 from src.db.local_store import (
     count_pallets,
     create_pallet,
     create_reprint_rows,
     fetch_label_history,
+    fetch_pallet_report,
     find_carton_by_sscc,
+    list_available_cartons,
     record_generation_run,
     void_pallet,
     write_flat_csv,
@@ -39,6 +46,7 @@ from src.db.local_store import (
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import (
+    GTIN_AI_CARTON,
     build_contents_barcode_data,
     build_contents_element_string,
     build_sscc_barcode_data,
@@ -51,8 +59,11 @@ from src.labels import (
     list_packing_slip_line_items,
     list_packing_slips_for_job,
 )
+from src.help_link import resolve_help_url
+from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import load_settings
+from src.setup_access import ADMIN_WELCOME_MESSAGE, SetupAccessLevel, resolve_setup_access
 from src.sscc import SSCCGenerator, build_sscc, build_test_sscc, get_counter_status
 from src.version import BUILD_DATE, version_string
 
@@ -62,10 +73,18 @@ APP_ICON_PATH = APP_ROOT / "assets" / "barbell_app_icon.png"  # rounded-square a
 BARBELL_LOGO_PATH = APP_ROOT / "assets" / "barbell_logo.png"  # full wordmark (icon + "BarBell" text)
 CLC_LOGO_PATH = APP_ROOT / "assets" / "clc_logo.png"  # Caribbean Label Crafts Ltd company logo
 
-HEADER_CLC_HEIGHT_PX = 22  # reduced to 50% of its original 44px per user request
+LCJ_LOGO_PATH = APP_ROOT / "assets" / "lcj_logo.png"  # Label Crafts Jamaica Ltd company logo
+MAKING_IDEAS_LOGO_PATH = APP_ROOT / "assets" / "making_ideas_logo.png"  # "Making Ideas Take Shape!" wordmark
+
 HEADER_BARBELL_HEIGHT_PX = 88  # main-screen BarBell logo at 200% (of the original 44px baseline)
+# The main screen's header shows only the "Making Ideas Take Shape!" wordmark
+# at its right edge (the CLC and LCJ company logos live on the About screen).
+# 44px keeps the stacked wordmark legible and sits well inside the 88px the
+# header already has, so the header doesn't grow.
+HEADER_MAKING_IDEAS_HEIGHT_PX = 44
 ABOUT_BARBELL_TARGET_PX = 200
 ABOUT_CLC_TARGET_PX = ABOUT_BARBELL_TARGET_PX // 2  # CLC shown at ~50% of the BarBell logo's size
+ABOUT_LCJ_TARGET_PX = ABOUT_CLC_TARGET_PX  # LCJ sits beside CLC, same width
 
 APP_DESCRIPTION = (
     "BarBell pulls job, packing slip, and item data from Label Traxx and combines it\n"
@@ -98,6 +117,43 @@ def scaled_photo_image_by_height(path: Path, target_height_px: int) -> tk.PhotoI
     return full.subsample(factor, factor)
 
 
+def load_header_logo(path: Path, target_height_px: int) -> ImageTk.PhotoImage | None:
+    """
+    A logo scaled to exactly target_height_px tall, keeping its aspect ratio,
+    with Lanczos resampling (so it stays sharp - unlike PhotoImage.subsample()'s
+    integer-factor, no-interpolation shrink, which can't hit an exact size).
+    Never upscales: a source already smaller than the target is used as-is.
+    Returns None (not an error) if the file is missing or unreadable.
+    """
+    if not path.exists():
+        return None
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+    except OSError:
+        return None
+    if image.height > target_height_px:
+        width = max(1, round(image.width * target_height_px / image.height))
+        image = image.resize((width, target_height_px), Image.LANCZOS)
+    return ImageTk.PhotoImage(image)
+
+
+def load_logo_to_width(path: Path, target_width_px: int) -> ImageTk.PhotoImage | None:
+    """Like load_header_logo(), but scaled to a target WIDTH (never upscaled) -
+    for the About screen, where logos are sized by width to sit side by side."""
+    if not path.exists():
+        return None
+    try:
+        with Image.open(path) as source:
+            image = source.convert("RGBA")
+    except OSError:
+        return None
+    if image.width > target_width_px:
+        height = max(1, round(image.height * target_width_px / image.width))
+        image = image.resize((target_width_px, height), Image.LANCZOS)
+    return ImageTk.PhotoImage(image)
+
+
 def load_scaled_or_none(path: Path, target_px: int, by_height: bool = False) -> tk.PhotoImage | None:
     """Best-effort load - returns None (not an error) if the asset isn't there yet."""
     if not path.exists():
@@ -119,9 +175,11 @@ class BarBellApp(tk.Tk):
         self.settings = load_settings()
         self._taskbar_icon = None
         self._header_barbell_logo = None
-        self._header_clc_logo = None
+        self._header_making_ideas_logo = None
+        self._header_logo_widgets = {}  # the placed logo labels, for tests/layout checks
         self._about_barbell_logo = None
         self._about_clc_logo = None
+        self._about_lcj_logo = None
         self._slips = []
         self._selected_slip = None
         self._line_items = []
@@ -129,8 +187,12 @@ class BarBellApp(tk.Tk):
         self._product = None
 
         self._load_logos()
+        self._build_menu()
         self._build_widgets()
         self._apply_demo_mode_ui()
+        # Closing the window with the X goes through the same backup-on-exit
+        # step as Home > Exit (minus the "are you sure" question).
+        self.protocol("WM_DELETE_WINDOW", self._close_window)
 
     # --- setup ---------------------------------------------------------
 
@@ -160,7 +222,12 @@ class BarBellApp(tk.Tk):
             self.title(f"BarBell {version_string()}")
             self.demo_banner.grid_remove()
             self.demo_hint_label.config(text="")
-            self.test_mode_checkbox.config(state="normal")
+            if self.settings.disable_test_mode_checkbox:
+                # Setup's "Disable Test Mode checkbox on main form": off and greyed out.
+                self.test_mode_var.set(False)
+                self.test_mode_checkbox.config(state="disabled")
+            else:
+                self.test_mode_checkbox.config(state="normal")
 
     def _load_logos(self):
         # Taskbar icon stays the square icon-only mark, not the wordmark.
@@ -180,18 +247,19 @@ class BarBellApp(tk.Tk):
             self._header_barbell_logo = load_scaled_or_none(
                 ICON_PATH, HEADER_BARBELL_HEIGHT_PX, by_height=True
             )
-        # CLC logo is pinned to the header's right edge, independent of the
-        # centered BarBell logo - see _build_widgets().
-        self._header_clc_logo = load_scaled_or_none(
-            CLC_LOGO_PATH, HEADER_CLC_HEIGHT_PX, by_height=True
+        # "Making Ideas Take Shape!" sits at the header's right edge,
+        # independent of the centered BarBell logo - see _build_widgets().
+        self._header_making_ideas_logo = load_header_logo(
+            MAKING_IDEAS_LOGO_PATH, HEADER_MAKING_IDEAS_HEIGHT_PX
         )
 
-        # About dialog: BarBell logo large, CLC logo at ~50% of that size.
+        # About dialog: BarBell logo large, CLC and LCJ logos side by side at ~50% of that size.
         self._about_barbell_logo = load_scaled_or_none(BARBELL_LOGO_PATH, ABOUT_BARBELL_TARGET_PX)
         self._using_wordmark_about = self._about_barbell_logo is not None
         if self._about_barbell_logo is None:
             self._about_barbell_logo = load_scaled_or_none(ICON_PATH, ABOUT_BARBELL_TARGET_PX)
         self._about_clc_logo = load_scaled_or_none(CLC_LOGO_PATH, ABOUT_CLC_TARGET_PX)
+        self._about_lcj_logo = load_logo_to_width(LCJ_LOGO_PATH, ABOUT_LCJ_TARGET_PX)
 
     def _build_widgets(self):
         # Demo Mode banner - always created, shown/hidden by _apply_demo_mode_ui()
@@ -217,15 +285,24 @@ class BarBellApp(tk.Tk):
 
         center = ttk.Frame(header)
         center.grid(row=0, column=1)
+        self._header_logo_widgets["center"] = center
         if self._header_barbell_logo is not None:
             ttk.Label(center, image=self._header_barbell_logo).pack(side="left")
         if not self._using_wordmark:
             ttk.Label(center, text="BarBell", font=("", 16, "bold")).pack(side="left", padx=10)
 
-        if self._header_clc_logo is not None:
+        if self._header_making_ideas_logo is not None:
             # place(), not grid - pinned to the header's right edge, independent
-            # of the centered BarBell logo above.
-            ttk.Label(header, image=self._header_clc_logo).place(relx=1.0, rely=0.5, anchor="e")
+            # of the centered BarBell logo above. A plain tk.Label with no
+            # border/padding (ttk.Label adds ~2px each side) and a background
+            # matching the frame, so the transparent wordmark blends in.
+            logo_bg = ttk.Style(self).lookup("TFrame", "background") or self.cget("background")
+            making_ideas_label = tk.Label(
+                header, image=self._header_making_ideas_logo,
+                bd=0, highlightthickness=0, padx=0, pady=0, bg=logo_bg,
+            )
+            making_ideas_label.place(relx=1.0, rely=0.5, anchor="e")
+            self._header_logo_widgets["making_ideas"] = making_ideas_label
 
         job_frame = ttk.LabelFrame(self, text="1. Job", padding=10)
         job_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
@@ -280,7 +357,7 @@ class BarBellApp(tk.Tk):
             row=1, column=1, sticky="w", padx=5
         )
 
-        ttk.Label(pkg_frame, text="Production date (YYYY-MM-DD):").grid(row=2, column=0, sticky="w")
+        ttk.Label(pkg_frame, text=f"Production date ({PRODUCTION_DATE_FORMAT}, e.g. {PRODUCTION_DATE_EXAMPLE}):").grid(row=2, column=0, sticky="w")
         self.production_date_var = tk.StringVar()
         ttk.Entry(pkg_frame, textvariable=self.production_date_var, width=15).grid(
             row=2, column=1, sticky="w", padx=5
@@ -304,7 +381,6 @@ class BarBellApp(tk.Tk):
         ttk.Button(action_frame, text="Job/Label History...", command=self._show_history).pack(
             side="right", padx=(0, 8)
         )
-        ttk.Button(action_frame, text="About", command=self._show_about).pack(side="right")
 
     # --- job / packing slip / GTIN -------------------------------------
 
@@ -491,9 +567,13 @@ class BarBellApp(tk.Tk):
 
         production_date = self.production_date_var.get().strip()
         try:
-            datetime.date.fromisoformat(production_date)
+            parse_production_date(production_date)
         except ValueError:
-            messagebox.showerror("Invalid date", f"{production_date!r} isn't a valid YYYY-MM-DD date.")
+            messagebox.showerror(
+                "Invalid date",
+                f"{production_date!r} isn't a valid {PRODUCTION_DATE_FORMAT} date "
+                f"(for example {PRODUCTION_DATE_EXAMPLE} for 4 Nov 2026).",
+            )
             return None
 
         line_item = self._selected_line_item
@@ -532,8 +612,11 @@ class BarBellApp(tk.Tk):
         if info is None:
             return
 
+        # Carton label: the GTIN is AI (01) - see src/gs1.py. The pallet screen's
+        # own preview (further down) uses the pallet form, AI (02).
         contents_data = build_contents_barcode_data(
-            info["gtin"], info["production_date"], info["first_package_qty"], info["batch"]
+            info["gtin"], info["production_date"], info["first_package_qty"], info["batch"],
+            gtin_ai=GTIN_AI_CARTON,
         )
         sscc_data = build_sscc_barcode_data(info["preview_sscc"])
 
@@ -545,7 +628,8 @@ class BarBellApp(tk.Tk):
 
         for label, ai_text, data in (
             ("Contents", build_contents_element_string(
-                info["gtin"], info["production_date"], info["first_package_qty"], info["batch"]
+                info["gtin"], info["production_date"], info["first_package_qty"], info["batch"],
+                gtin_ai=GTIN_AI_CARTON,
             ), contents_data),
             ("SSCC", build_sscc_element_string(info["preview_sscc"]), sscc_data),
         ):
@@ -589,7 +673,7 @@ class BarBellApp(tk.Tk):
 
         preview_text = (
             f"GS1-128 element strings for package 1:\n"
-            f"  Contents: {build_contents_element_string(info['gtin'], production_date, info['first_package_qty'], info['batch'])}\n"
+            f"  Contents: {build_contents_element_string(info['gtin'], production_date, info['first_package_qty'], info['batch'], gtin_ai=GTIN_AI_CARTON)}\n"
             f"  SSCC:     {build_sscc_element_string(info['preview_sscc'])}\n\n"
         )
 
@@ -686,6 +770,12 @@ class BarBellApp(tk.Tk):
         out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
         return write_flat_csv(rows, out_path)
 
+    @staticmethod
+    def _open_file(path: Path) -> None:
+        """Opens a file in its default Windows viewer - its own method so
+        tests can replace it rather than launching a real PDF reader."""
+        os.startfile(str(path))
+
     # --- job/label history -----------------------------------------------
 
     def _show_history(self):
@@ -693,7 +783,7 @@ class BarBellApp(tk.Tk):
         Browses BarBell's own local log of everything it has generated
         (src/db/local_store.py), joined from the Jobs and Labels tables -
         not Label Traxx. Filter by an exact Job No and/or production date
-        (YYYY-MM-DD); leave either blank to not filter on it.
+        (YYMMDD); leave either blank to not filter on it.
         """
         win = tk.Toplevel(self)
         win.title("Job/Label History")
@@ -710,7 +800,7 @@ class BarBellApp(tk.Tk):
         job_filter_var = tk.StringVar()
         ttk.Entry(filter_frame, textvariable=job_filter_var, width=12).pack(side="left", padx=(4, 12))
 
-        ttk.Label(filter_frame, text="Date (YYYY-MM-DD):").pack(side="left")
+        ttk.Label(filter_frame, text=f"Date ({PRODUCTION_DATE_FORMAT}):").pack(side="left")
         date_filter_var = tk.StringVar()
         ttk.Entry(filter_frame, textvariable=date_filter_var, width=11).pack(side="left", padx=(4, 12))
 
@@ -929,6 +1019,60 @@ class BarBellApp(tk.Tk):
             )
             refresh()
 
+        def pallet_report_selected():
+            """PDF listing every carton on the checked pallet. Accepts a
+            pallet's own row(s) or any carton row already on a pallet - either
+            way it resolves to one pallet SSCC."""
+            selected_ids = [iid for iid in tree.get_children() if iid in checked_ids]
+            if not selected_ids:
+                messagebox.showinfo("Nothing selected", "Check a pallet's row first.", parent=win)
+                return
+
+            pallet_ssccs = set()
+            for iid in selected_ids:
+                values = tree.item(iid, "values")
+                if values[11] == "PALLET":  # label_type column
+                    pallet_ssccs.add(values[6])  # sscc column
+                elif values[12]:  # a carton - its pallet_sscc column
+                    pallet_ssccs.add(values[12])
+            if not pallet_ssccs:
+                messagebox.showerror(
+                    "Invalid selection",
+                    "Check a pallet's row, or a carton that's already on a pallet.",
+                    parent=win,
+                )
+                return
+            if len(pallet_ssccs) > 1:
+                messagebox.showerror(
+                    "Invalid selection", "Check rows for only one pallet at a time.", parent=win
+                )
+                return
+            pallet_sscc = next(iter(pallet_ssccs))
+
+            demo = self.settings.demo_mode
+            db_path = self.settings.demo_db_file if demo else self.settings.local_db_file
+            try:
+                report = fetch_pallet_report(pallet_sscc, db_path)
+                prefix = "DEMO_" if demo else ""
+                suffix = "_TEST" if report.test_mode else ""
+                out_path = build_pallet_report_pdf(
+                    report,
+                    Path(self.settings.output_dir) / f"{prefix}Pallet_report_{pallet_sscc}{suffix}.pdf",
+                    company_name=self.settings.company_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Pallet report failed", str(exc), parent=win)
+                return
+
+            try:
+                self._open_file(out_path)
+            except OSError as exc:
+                messagebox.showinfo(
+                    "Pallet report saved",
+                    f"Saved to:\n{out_path}\n\n(It couldn't be opened automatically: {exc})",
+                    parent=win,
+                )
+
         button_frame = ttk.Frame(filter_frame)
         button_frame.pack(side="left")
         ttk.Button(button_frame, text="Search / Refresh", command=refresh).pack(side="left")
@@ -939,11 +1083,21 @@ class BarBellApp(tk.Tk):
                 job_filter_var.set(""), date_filter_var.set(""), sscc_filter_var.set(""), refresh()
             ),
         ).pack(side="left", padx=(6, 0))
+
+        # Actions on the checked rows get their own row: on one line with the
+        # filters they ran past the edge of the window, hiding Void Pallet and
+        # Pallet Report unless the window was widened.
+        action_frame = ttk.Frame(win, padding=(10, 6, 10, 6))
+        action_frame.pack(side="top", fill="x", before=tree_frame)
+        ttk.Label(action_frame, text="Checked rows:").pack(side="left", padx=(0, 8))
         ttk.Button(
-            button_frame, text="Reprint Selected (Export to CSV)", command=export_selected
-        ).pack(side="left", padx=(12, 0))
+            action_frame, text="Reprint Selected (Export to CSV)", command=export_selected
+        ).pack(side="left")
         ttk.Button(
-            button_frame, text="Void Pallet", command=void_selected_pallet
+            action_frame, text="Void Pallet", command=void_selected_pallet
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            action_frame, text="Pallet Report (PDF)", command=pallet_report_selected
         ).pack(side="left", padx=(8, 0))
 
         refresh()
@@ -998,6 +1152,10 @@ class BarBellApp(tk.Tk):
         scan_entry = ttk.Entry(scan_frame, textvariable=scan_var, width=30, state="disabled")
         scan_entry.pack(side="left", padx=(4, 12))
 
+        # Scanning is the default; this is the fallback if the scanner fails.
+        pick_button = ttk.Button(scan_frame, text="Select Carton SSCC...", state="disabled")
+        pick_button.pack(side="left", padx=(0, 12))
+
         scan_feedback_label = ttk.Label(scan_frame, text="", font=("", 10, "bold"))
         scan_feedback_label.pack(side="left")
 
@@ -1012,7 +1170,9 @@ class BarBellApp(tk.Tk):
             return value if value >= 1 else None
 
         def sync_scan_entry_enabled(*_):
-            scan_entry.config(state="normal" if expected_count() is not None else "disabled")
+            state = "normal" if expected_count() is not None else "disabled"
+            scan_entry.config(state=state)
+            pick_button.config(state=state)
 
         expected_count_var.trace_add("write", sync_scan_entry_enabled)
 
@@ -1083,6 +1243,28 @@ class BarBellApp(tk.Tk):
             except RuntimeError:
                 pass  # no sound device - not fatal, the on-screen message still shows
 
+        def add_carton_by_sscc(sscc: str, parent=None) -> tuple[bool, str]:
+            """The one path a carton takes onto the pallet - scanned or
+            picked from the list: look it up, run the block/warn checks,
+            confirm any warnings, add it. Returns (added, message)."""
+            carton = find_carton_by_sscc(sscc, db_path)
+            check = check_carton_for_pallet(
+                carton, scanned_cartons, expected_count() or 0, pallet_test_mode_var.get()
+            )
+            if check.blocked_reason:
+                return False, check.blocked_reason
+
+            for warning in check.warnings:
+                if not messagebox.askyesno(
+                    "Confirm carton", f"{warning}\n\nAdd this carton to the pallet anyway?",
+                    parent=parent or win,
+                ):
+                    return False, "Scan discarded."
+
+            scanned_cartons.append(check.carton)
+            refresh_grid_and_totals()
+            return True, f"{sscc} added."
+
         def on_scan_submit(_event=None):
             raw = scan_var.get()
             scan_var.set("")
@@ -1096,26 +1278,169 @@ class BarBellApp(tk.Tk):
                 show_feedback(str(exc), ok=False)
                 return
 
-            carton = find_carton_by_sscc(sscc, db_path)
-            check = check_carton_for_pallet(
-                carton, scanned_cartons, expected_count() or 0, pallet_test_mode_var.get()
-            )
-            if check.blocked_reason:
-                show_feedback(check.blocked_reason, ok=False)
-                return
-
-            for warning in check.warnings:
-                if not messagebox.askyesno(
-                    "Confirm carton", f"{warning}\n\nAdd this carton to the pallet anyway?", parent=win
-                ):
-                    show_feedback("Scan discarded.", ok=False)
-                    return
-
-            scanned_cartons.append(check.carton)
-            refresh_grid_and_totals()
-            show_feedback(f"{sscc} added.", ok=True)
+            ok, message = add_carton_by_sscc(sscc)
+            show_feedback(message, ok=ok)
 
         scan_entry.bind("<Return>", on_scan_submit)
+
+        # --- or pick from a list, if the scanner isn't working ---------------
+
+        def open_carton_picker():
+            """
+            Fallback to scanning: a list of every carton not yet on a pallet
+            (same kind - test/production - as this pallet), to check and add
+            in bulk. Goes through add_carton_by_sscc() exactly like a scan,
+            so every block/warning rule applies identically.
+            """
+            picker = tk.Toplevel(win)
+            picker.title("Select Carton SSCC")
+            picker.geometry("1000x520")
+            picker.minsize(600, 300)
+            picker.transient(win)
+
+            CHECKED, UNCHECKED = "☑", "☐"
+            checked: set[str] = set()  # tree iids (== SSCC) currently checked
+
+            filter_frame = ttk.Frame(picker, padding=10)
+            filter_frame.pack(fill="x")
+            ttk.Label(filter_frame, text="Job No:").pack(side="left")
+            job_var = tk.StringVar()
+            ttk.Entry(filter_frame, textvariable=job_var, width=12).pack(side="left", padx=(4, 12))
+            ttk.Label(filter_frame, text="SSCC contains:").pack(side="left")
+            sscc_var = tk.StringVar()
+            ttk.Entry(filter_frame, textvariable=sscc_var, width=22).pack(side="left", padx=(4, 12))
+
+            status_label = ttk.Label(picker, text="", padding=(10, 0, 10, 10))
+            status_label.pack(side="bottom", fill="x")
+            button_row = ttk.Frame(picker, padding=(10, 0, 10, 6))
+            button_row.pack(side="bottom", fill="x")
+
+            tree_frame = ttk.Frame(picker, padding=(10, 0, 10, 0))
+            tree_frame.pack(side="top", fill="both", expand=True)
+            tree_frame.rowconfigure(0, weight=1)
+            tree_frame.columnconfigure(0, weight=1)
+
+            pick_columns = ("sel", "sscc", "description", "batch", "qty", "job_number", "production_date")
+            pick_headings = {
+                "sscc": "SSCC", "description": "Description", "batch": "Batch", "qty": "Qty",
+                "job_number": "Job No", "production_date": "Production Date",
+            }
+            pick_widths = {
+                "sscc": 170, "description": 330, "batch": 120, "qty": 70, "job_number": 80,
+                "production_date": 110,
+            }
+            pick_tree = ttk.Treeview(tree_frame, columns=pick_columns, show="headings")
+            pick_tree.heading("sel", text=UNCHECKED, command=lambda: toggle_all())
+            pick_tree.column("sel", width=30, anchor="center", stretch=False)
+            for col in pick_columns[1:]:
+                pick_tree.heading(col, text=pick_headings[col])
+                pick_tree.column(col, width=pick_widths[col], anchor="w", stretch=False)
+            pv = ttk.Scrollbar(tree_frame, orient="vertical", command=pick_tree.yview)
+            ph = ttk.Scrollbar(tree_frame, orient="horizontal", command=pick_tree.xview)
+            pick_tree.configure(yscrollcommand=pv.set, xscrollcommand=ph.set)
+            pick_tree.grid(row=0, column=0, sticky="nsew")
+            pv.grid(row=0, column=1, sticky="ns")
+            ph.grid(row=1, column=0, sticky="ew")
+
+            def redraw_checkbox(iid: str):
+                values = list(pick_tree.item(iid, "values"))
+                values[0] = CHECKED if iid in checked else UNCHECKED
+                pick_tree.item(iid, values=values)
+
+            def sync_heading():
+                rows = pick_tree.get_children()
+                pick_tree.heading(
+                    "sel", text=CHECKED if rows and all(i in checked for i in rows) else UNCHECKED
+                )
+
+            def toggle_all():
+                rows = pick_tree.get_children()
+                select = not (rows and all(i in checked for i in rows))
+                for iid in rows:
+                    (checked.add if select else checked.discard)(iid)
+                    redraw_checkbox(iid)
+                sync_heading()
+
+            def on_click(event):
+                if pick_tree.identify_region(event.x, event.y) != "cell":
+                    return
+                if pick_tree.identify_column(event.x) != "#1":
+                    return
+                iid = pick_tree.identify_row(event.y)
+                if not iid:
+                    return
+                (checked.discard if iid in checked else checked.add)(iid)
+                redraw_checkbox(iid)
+                sync_heading()
+
+            pick_tree.bind("<Button-1>", on_click)
+
+            def refresh_list(*_):
+                checked.clear()
+                pick_tree.delete(*pick_tree.get_children())
+                reference = scanned_cartons[0] if scanned_cartons else None
+                try:
+                    cartons = list_available_cartons(
+                        db_path,
+                        test_mode=pallet_test_mode_var.get(),
+                        job_number=job_var.get().strip() or None,
+                        sscc_contains=sscc_var.get().strip() or None,
+                        batch=reference.batch if reference else None,
+                        gtin=reference.gtin if reference else None,
+                        exclude_ssccs=[c.sscc for c in scanned_cartons],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    messagebox.showerror("Lookup failed", str(exc), parent=picker)
+                    return
+                for c in cartons:
+                    pick_tree.insert(
+                        "", tk.END, iid=c.sscc,
+                        values=(
+                            UNCHECKED, c.sscc, c.description, c.batch, c.quantity, c.job_number,
+                            c.production_date,
+                        ),
+                    )
+                sync_heading()
+                note = f" - only batch {reference.batch}, matching the pallet so far" if reference else ""
+                status_label.config(
+                    text=f"{len(cartons)} carton(s) not yet on a pallet"
+                    f"{' (test)' if pallet_test_mode_var.get() else ''}{note}"
+                )
+
+            def add_checked():
+                picks = [iid for iid in pick_tree.get_children() if iid in checked]
+                if not picks:
+                    messagebox.showinfo("Nothing selected", "Check one or more cartons first.", parent=picker)
+                    return
+                added, problems = 0, []
+                for sscc in picks:
+                    ok, message = add_carton_by_sscc(sscc, parent=picker)
+                    if ok:
+                        added += 1
+                    else:
+                        problems.append(f"{sscc}: {message}")
+                        if "Already scanned" in message:  # count reached - the rest would all fail
+                            break
+                if problems:
+                    messagebox.showerror(
+                        "Some cartons were not added",
+                        f"Added {added} of {len(picks)}.\n\n" + "\n".join(problems[:8])
+                        + (f"\n...and {len(problems) - 8} more" if len(problems) > 8 else ""),
+                        parent=picker,
+                    )
+                refresh_list()
+                if not problems:
+                    status_label.config(text=f"Added {added} carton(s) to the pallet.")
+
+            ttk.Button(filter_frame, text="Search / Refresh", command=refresh_list).pack(side="left")
+            ttk.Button(button_row, text="Add Selected to Pallet", command=add_checked).pack(side="left")
+            ttk.Button(button_row, text="Close", command=picker.destroy).pack(side="right")
+
+            refresh_list()
+            job_var.trace_add("write", refresh_list)
+            sscc_var.trace_add("write", refresh_list)
+
+        pick_button.config(command=open_carton_picker)
 
         # --- remove / clear --------------------------------------------------
 
@@ -1283,6 +1608,10 @@ class BarBellApp(tk.Tk):
             )
             scanned_cartons.clear()
             expected_count_var.set("")
+            # The last scan message (often a red error from an earlier mis-scan)
+            # belongs to the pallet that's now finished - don't leave it showing
+            # on the fresh, empty screen.
+            scan_feedback_label.config(text="")
             refresh_grid_and_totals()
 
         # --- window-level buttons / close -------------------------------
@@ -1332,8 +1661,13 @@ class BarBellApp(tk.Tk):
         if not self._using_wordmark_about:
             ttk.Label(frame, text="BarBell", font=("", 14, "bold")).pack()
 
-        if self._about_clc_logo is not None:
-            ttk.Label(frame, image=self._about_clc_logo).pack(pady=(0, 10))
+        if self._about_clc_logo is not None or self._about_lcj_logo is not None:
+            company_logos = ttk.Frame(frame)
+            company_logos.pack(pady=(0, 10))
+            if self._about_clc_logo is not None:
+                ttk.Label(company_logos, image=self._about_clc_logo).pack(side="left", padx=(0, 15))
+            if self._about_lcj_logo is not None:
+                ttk.Label(company_logos, image=self._about_lcj_logo).pack(side="left")
 
         ttk.Label(frame, text=APP_DESCRIPTION, justify="center").pack(pady=10)
         ttk.Label(frame, text="© 2026 Caribbean Label Crafts Ltd.").pack()
@@ -1344,6 +1678,14 @@ class BarBellApp(tk.Tk):
         ttk.Button(frame, text="Setup...", command=self._prompt_setup_password).pack()
 
     def _prompt_setup_password(self):
+        """
+        The one Setup entry point: the Setup menu and the About screen's
+        Setup button both call this, so they behave identically. Asks for
+        the password, works out which access level it grants (see
+        src/setup_access.py - the passwords themselves live only there) and
+        launches Setup told that level. Nothing typed is ever logged or put
+        in a message.
+        """
         entered = simpledialog.askstring(
             "Setup", "Enter the setup password:", show="*", parent=self
         )
@@ -1351,11 +1693,123 @@ class BarBellApp(tk.Tk):
             return
 
         settings = load_settings()  # reload in case it changed since app start
-        if not check_setup_password(entered, settings):
+        access_level = resolve_setup_access(entered, settings.setup_password)
+        if access_level is None:
             messagebox.showerror("Incorrect password", "That password is incorrect.")
             return
 
-        subprocess.Popen([sys.executable, str(APP_ROOT / "setup_gui.py")], cwd=str(APP_ROOT))
+        if access_level is SetupAccessLevel.Admin:
+            messagebox.showinfo("Setup", ADMIN_WELCOME_MESSAGE, parent=self)
+
+        subprocess.Popen(
+            [sys.executable, str(APP_ROOT / "setup_gui.py"), "--access-level", access_level.value],
+            cwd=str(APP_ROOT),
+        )
+
+    # --- menu bar -------------------------------------------------------
+
+    def _build_menu(self):
+        """Top menu bar: Home (Setup, Exit) and Help (Help, Contacts, About).
+        About is reached only from here - the main form has no About button."""
+        menubar = tk.Menu(self, tearoff=False)
+
+        home_menu = tk.Menu(menubar, tearoff=False)
+        home_menu.add_command(label="Setup", command=self._prompt_setup_password)
+        home_menu.add_command(label="Back Up Now", command=self._back_up_now)
+        home_menu.add_command(label="Exit", command=self._confirm_exit)
+        menubar.add_cascade(label="Home", menu=home_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="Help", command=self._show_help)
+        help_menu.add_command(label="Contacts", command=self._show_contacts)
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+        self._menubar = menubar
+
+    def _confirm_exit(self):
+        if messagebox.askyesno("Exit BarBell", "Are you sure you want to exit BarBell?", parent=self):
+            self._close_window()
+
+    def _close_window(self):
+        """Back up (if a backup directory is set), then close. A failed
+        backup asks before closing - it never traps you in the app."""
+        if self._backup_before_closing():
+            self.destroy()
+
+    def _backup_before_closing(self) -> bool:
+        """True if it's OK to close. Backups are off when no backup directory
+        is set in Setup, and in Demo Mode (which only touches sample data)."""
+        if self.settings.demo_mode or not self.settings.backup_dir:
+            return True
+        try:
+            create_backup(self.settings, self.settings.backup_dir, REASON_EXIT)
+        except Exception as exc:  # noqa: BLE001 - whatever went wrong, offer to close anyway
+            return messagebox.askyesno(
+                "Backup failed",
+                f"BarBell couldn't back up your data:\n\n{exc}\n\nExit anyway?",
+                icon="warning",
+                parent=self,
+            )
+        return True
+
+    def _back_up_now(self):
+        if self.settings.demo_mode:
+            messagebox.showinfo("Back Up Now", "Demo Mode only uses sample data - there's nothing to back up.", parent=self)
+            return
+        if not self.settings.backup_dir:
+            messagebox.showinfo(
+                "Back Up Now",
+                "Backups are off. Choose a backup directory in Setup (Home > Setup) first.",
+                parent=self,
+            )
+            return
+        try:
+            result = create_backup(self.settings, self.settings.backup_dir, REASON_MANUAL)
+        except BackupError as exc:
+            messagebox.showerror("Backup failed", str(exc), parent=self)
+            return
+        messagebox.showinfo("Back Up Now", result.message, parent=self)
+
+    def _show_placeholder_screen(self, title: str, text: str):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=25)
+        frame.pack()
+        ttk.Label(frame, text=title, font=("", 14, "bold")).pack(pady=(0, 10))
+        ttk.Label(frame, text=text, justify="center", wraplength=380).pack()
+        ttk.Button(frame, text="Close", command=win.destroy).pack(pady=(15, 0))
+        return win
+
+    def _show_help(self):
+        """Opens the BarBell Operator Guide in the web browser (the address is
+        src/help_link.py's HELP_URL, or Settings.help_url if set). If no browser
+        can be opened, says where the guide is instead - and copies the address
+        to the clipboard so it can be pasted into one."""
+        url = resolve_help_url(self.settings.help_url)
+        try:
+            opened = webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - no browser registered, locked-down PC, etc.
+            opened = False
+        if opened:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(url)
+            copied = "\n\n(The address has been copied - paste it into a web browser.)"
+        except tk.TclError:
+            copied = ""
+        messagebox.showinfo(
+            "Help",
+            f"BarBell couldn't open a web browser. The Operator Guide is at:\n\n{url}{copied}",
+            parent=self,
+        )
+
+    def _show_contacts(self):
+        # Contact details to be supplied - placeholder for now.
+        self._show_placeholder_screen("Contacts", "Contact details will be added here.")
 
 
 if __name__ == "__main__":
