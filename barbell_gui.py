@@ -34,6 +34,7 @@ from src.db.local_store import (
     count_pallets,
     create_pallet,
     create_reprint_rows,
+    count_label_history,
     fetch_label_history,
     fetch_pallet_report,
     find_carton_by_sscc,
@@ -85,6 +86,17 @@ HEADER_MAKING_IDEAS_HEIGHT_PX = 44
 ABOUT_BARBELL_TARGET_PX = 200
 ABOUT_CLC_TARGET_PX = ABOUT_BARBELL_TARGET_PX // 2  # CLC shown at ~50% of the BarBell logo's size
 ABOUT_LCJ_TARGET_PX = ABOUT_CLC_TARGET_PX  # LCJ sits beside CLC, same width
+
+# Job/Label History: how far back the plain list goes. label -> (days or None, phrase for the status line).
+HISTORY_PERIODS = {
+    "Last 30 days": (30, "30 days"),
+    "Last 90 days": (90, "90 days"),
+    "Last 6 months": (183, "6 months"),
+    "Last year": (365, "a year"),
+    "All history": (None, ""),
+}
+HISTORY_DEFAULT_PERIOD = "Last 90 days"
+HISTORY_ALL_PERIOD = "All history"
 
 APP_DESCRIPTION = (
     "BarBell pulls job, packing slip, and item data from Label Traxx and combines it\n"
@@ -784,6 +796,11 @@ class BarBellApp(tk.Tk):
         (src/db/local_store.py), joined from the Jobs and Labels tables -
         not Label Traxx. Filter by an exact Job No and/or production date
         (YYMMDD); leave either blank to not filter on it.
+
+        The plain list shows the last 90 days of real labels (test labels hidden) so it
+        stays short; the Show box and Hide test labels checkbox change that, and "Show
+        all history" removes both limits. Typing in any search box searches ALL history,
+        test labels included. Nothing is ever deleted - this only limits what is listed.
         """
         win = tk.Toplevel(self)
         win.title("Job/Label History")
@@ -812,6 +829,37 @@ class BarBellApp(tk.Tk):
         sscc_filter_var = tk.StringVar()
         ttk.Entry(filter_frame, textvariable=sscc_filter_var, width=22).pack(side="left", padx=(4, 12))
 
+        # What the plain list shows. Only the LIST is limited - nothing is deleted, and
+        # searching (above) always covers everything. See refresh().
+        view_frame = ttk.Frame(win, padding=(10, 0, 10, 4))
+        view_frame.pack(fill="x")
+        ttk.Label(view_frame, text="Show:").pack(side="left")
+        period_var = tk.StringVar(value=HISTORY_DEFAULT_PERIOD)
+        period_combo = ttk.Combobox(
+            view_frame, textvariable=period_var, values=list(HISTORY_PERIODS), state="readonly", width=16
+        )
+        period_combo.pack(side="left", padx=(4, 16))
+        hide_test_var = tk.BooleanVar(value=True)
+        hide_check = ttk.Checkbutton(
+            view_frame, text="Hide test labels", variable=hide_test_var, command=lambda: refresh()
+        )
+        hide_check.pack(side="left", padx=(0, 16))
+
+        def show_all():
+            period_var.set(HISTORY_ALL_PERIOD)
+            hide_test_var.set(False)
+            refresh()
+
+        show_all_button = ttk.Button(view_frame, text="Show all history", command=show_all)
+        show_all_button.pack(side="left")
+        period_combo.bind("<<ComboboxSelected>>", lambda _e: refresh())
+        # handles for tests / anything that needs to drive the list
+        win.history_controls = {
+            "period": period_var, "hide_test": hide_test_var, "period_combo": period_combo,
+            "hide_check": hide_check, "show_all": show_all_button, "status": None,
+            "job": job_filter_var, "date": date_filter_var, "sscc": sscc_filter_var,
+        }
+
         columns = (
             "sel", "job_number", "packing_slip", "product_no", "item_number", "batch",
             "sscc", "carton_seq", "copy", "quantity", "status", "label_type", "pallet_sscc",
@@ -829,6 +877,7 @@ class BarBellApp(tk.Tk):
         # space at the bottom, however the grid resizes.
         status_label = ttk.Label(win, text="", padding=(10, 0, 10, 10))
         status_label.pack(side="bottom", fill="x")
+        win.history_controls["status"] = status_label
 
         # grid(), not pack(): with pack the scrollbar was placed after a tree
         # wider than the window and got pushed off-screen. Here the tree takes
@@ -908,13 +957,28 @@ class BarBellApp(tk.Tk):
             checked_ids.clear()  # a new search/filter clears stale selections
             tree.heading("sel", text=UNCHECKED)
             tree.delete(*tree.get_children())
+            db_file = self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file
+            job = job_filter_var.get().strip() or None
+            date = date_filter_var.get().strip() or None
+            sscc = sscc_filter_var.get().strip() or None
+            # Searching always looks through ALL history, test labels included - an old
+            # label (a box back for rework) or a test one must always be findable. So the
+            # period and Hide-test controls only apply to the plain list, and grey out
+            # while a search is active to make that obvious.
+            searching = bool(job or date or sscc)
+            period_days, period_phrase = HISTORY_PERIODS[period_var.get()]
+            since_days = None if searching else period_days
+            hide_test = False if searching else hide_test_var.get()
+            period_combo.config(state="disabled" if searching else "readonly")
+            hide_check.config(state="disabled" if searching else "normal")
+            show_all_button.config(state="disabled" if searching else "normal")
             try:
                 rows = fetch_label_history(
-                    self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file,
-                    job_number=job_filter_var.get().strip() or None,
-                    date=date_filter_var.get().strip() or None,
-                    sscc_contains=sscc_filter_var.get().strip() or None,
+                    db_file, job_number=job, date=date, sscc_contains=sscc,
+                    since_days=since_days, hide_test=hide_test,
                 )
+                total_all = count_label_history(db_file)
+                not_test_total = count_label_history(db_file, hide_test=hide_test) if hide_test else total_all
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Lookup failed", str(exc), parent=win)
                 return
@@ -929,7 +993,24 @@ class BarBellApp(tk.Tk):
                         r.status, r.label_type, r.pallet_sscc or "", r.created_at,
                     ),
                 )
-            status_label.config(text=f"{len(rows)} label row(s)")
+            if searching:
+                status_text = f"{len(rows):,} label row(s) found searching all history (test labels included)."
+            else:
+                older_hidden = not_test_total - len(rows)  # outside the period, not test
+                test_hidden = total_all - not_test_total  # test labels, at any age
+                if older_hidden or test_hidden:
+                    parts = []
+                    if older_hidden:
+                        parts.append(f"{older_hidden:,} older than {period_phrase}")
+                    if test_hidden:
+                        parts.append(f"{test_hidden:,} test label(s)")
+                    status_text = (
+                        f"Showing {len(rows):,} of {total_all:,} label row(s). Hidden: {', '.join(parts)}. "
+                        "Search, or click Show all history, to see them."
+                    )
+                else:
+                    status_text = f"{len(rows):,} label row(s)"
+            status_label.config(text=status_text)
 
         def export_selected():
             selected_ids = [int(iid) for iid in tree.get_children() if iid in checked_ids]

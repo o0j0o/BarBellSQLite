@@ -1,7 +1,7 @@
 """
 Builds the BarBell Windows installer.
 
-    python installer/build_installer.py                 # builds BarBell-Setup-1.2.0-Beta.exe
+    python installer/build_installer.py                 # builds BarBell-Setup-1.2.1-Beta.exe
     python installer/build_installer.py --skip-compile  # only the .exe files, no installer
 
 What it does:
@@ -10,7 +10,7 @@ What it does:
      settings.json, .env or counters.
   2. Sets the PACKAGE's version in that staged copy only. Your development
      copy keeps its own 1.1.x number (src/version.py is untouched); the
-     production package is "1.2.0 Beta" (RELEASE_* below).
+     production package is "1.2.1 Beta" (RELEASE_* below).
   3. Builds BarBell.exe (the app, no console window) and barbell_install_helper.exe
      (what the installer wizard runs to detect / back up / restore data) with PyInstaller.
   4. Compiles installer/BarBell.iss with Inno Setup into
@@ -41,7 +41,7 @@ OUTPUT = BUILD / "Output"  # where the compiler writes it (next to the other bui
 FINAL_OUTPUT = INSTALLER_DIR / "Output"
 
 # The production package's version. The dev copy stays on 1.1.x.
-RELEASE_MAJOR, RELEASE_MINOR, RELEASE_PATCH, RELEASE_BETA = 1, 2, 0, True
+RELEASE_MAJOR, RELEASE_MINOR, RELEASE_PATCH, RELEASE_BETA = 1, 2, 1, True
 
 STAGED_FILES = ["barbell_gui.py", "setup_gui.py"]
 STAGED_DIRS = ["src", "assets"]

@@ -1,7 +1,7 @@
-# BarBell Windows installer (package version 1.2.0 Beta)
+# BarBell Windows installer (package version 1.2.1 Beta)
 
-One file, `BarBell-Setup-1.2.0-Beta.exe`, installs BarBell on Windows 11. The development copy stays on
-1.1.x; the production package is **1.2.0 Beta** (set in `build_installer.py`, only inside the build).
+One file, `BarBell-Setup-1.2.1-Beta.exe`, installs BarBell on Windows 11. The development copy stays on
+1.1.x; the production package is **1.2.1 Beta** (set in `build_installer.py`, only inside the build).
 
 ## Building it
 
@@ -11,7 +11,7 @@ winget install JRSoftware.InnoSetup  # once (Inno Setup 6)
 python installer\build_installer.py
 ```
 
-Output: **`installer\Output\BarBell-Setup-1.2.0-Beta.exe`** in this project folder (git-ignored). The
+Output: **`installer\Output\BarBell-Setup-1.2.1-Beta.exe`** in this project folder (git-ignored). The
 intermediate build files are kept outside the project, in `%LOCALAPPDATA%\BarBellBuild`. (If the build is run from
 inside the Claude desktop app, Windows redirects anything under AppData into that app's private storage where File
 Explorer can't see it - which is why the finished installer is copied into the project.) `--skip-compile` builds just
@@ -40,7 +40,7 @@ Uninstalling removes the program only. `<folder>\data` and the installer backups
 ## Unattended install (used by the checks)
 
 ```
-BarBell-Setup-1.2.0-Beta.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\BarBell" /LOG="install.log"
+BarBell-Setup-1.2.1-Beta.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\BarBell" /LOG="install.log"
     [/DATAMODE=keep|blank|restore-backup|restore-file] [/DATASOURCE=<db file or backup folder>]
     [/LTUSER=<user> /LTPASSWORD=<password> /LTDSN=<dsn>] [/BACKUPROOT=<folder>]
 ```

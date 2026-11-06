@@ -10,7 +10,7 @@
   BarBell is registered on this PC.
 
   Checks (the four you asked for):
-    1. Install and start the app       - files, shortcuts, registry, the app starts and says 1.2.0 Beta
+    1. Install and start the app       - files, shortcuts, registry, the app starts and says 1.2.1 Beta
     2. Upgrade keeps data              - existing install detected, database + counters backed up BEFORE any
                                          file is changed, and left unchanged afterwards
     3. Restore paths                   - restore from the installer's backup (with a damaged database), a
@@ -21,7 +21,7 @@
 
 .EXAMPLE
   .\installer\test_installer.ps1
-  .\installer\test_installer.ps1 -Setup "C:\path\BarBell-Setup-1.2.0-Beta.exe" -KeepFiles
+  .\installer\test_installer.ps1 -Setup "C:\path\BarBell-Setup-1.2.1-Beta.exe" -KeepFiles
 #>
 [CmdletBinding()]
 param(
@@ -39,7 +39,7 @@ if (-not $Setup) {
   $Setup = (Get-ChildItem "$here\Output\BarBell-Setup-*.exe", "$env:LOCALAPPDATA\BarBellBuild\Output\BarBell-Setup-*.exe" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
-$expectedLabel = '1.2.0 Beta'
+$expectedLabel = '1.2.1 Beta'
 $regKey = 'HKLM:\SOFTWARE\Caribbean Label Crafts\BarBell'
 $A = Join-Path $Root 'A'          # the install under test
 $B = Join-Path $Root 'B'          # a "new machine"
@@ -113,10 +113,10 @@ Write-Host "  Windows build: $build  (Windows 11 is 22000 or higher)"
 Write-Host ''
 Write-Host '0. Environment' -ForegroundColor Cyan
 Check 'Windows 11 (build 22000 or higher)' { Assert ($build -ge 22000) "this is build $build" }
-Check 'Installer carries the 1.2.0 Beta label' {
+Check 'Installer carries the 1.2.1 Beta label' {
   $v = (Get-Item $Setup).VersionInfo
-  Assert ($v.ProductVersion -like '1.2.0*') "ProductVersion is '$($v.ProductVersion)'"
-  Assert ((Split-Path $Setup -Leaf) -like '*1.2.0-Beta*') "file name is $(Split-Path $Setup -Leaf)"
+  Assert ($v.ProductVersion -like '1.2.1*') "ProductVersion is '$($v.ProductVersion)'"
+  Assert ((Split-Path $Setup -Leaf) -like '*1.2.1-Beta*') "file name is $(Split-Path $Setup -Leaf)"
 }
 
 # --------------------------------------------------------------------------- 1. install and start
@@ -138,7 +138,7 @@ Check 'the install is recorded in the registry' {
   Assert ((Get-ItemProperty $regKey).Version -eq $expectedLabel) 'Version value is wrong'
 }
 Check 'no existing installation was reported on a first install' { Assert ($r1.Text -notmatch 'existing install at') 'it claimed to find one' }
-Check 'the installed app starts, says 1.2.0 Beta, and uses the data folder' {
+Check 'the installed app starts, says 1.2.1 Beta, and uses the data folder' {
   $out = Join-Path $Root 'selftest.json'
   [void](Run-App "$A\BarBell.exe" @('--selftest', "`"$out`""))
   Assert (Test-Path $out) 'the app did not write its self-test file (did it start?)'

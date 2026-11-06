@@ -64,7 +64,7 @@ import getpass
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.dates import normalize_production_date
@@ -401,11 +401,52 @@ def record_generation_run(
         conn.close()
 
 
+def _history_filters(
+    job_number: str | None,
+    date: str | None,
+    sscc_contains: str | None,
+    since_days: int | None,
+    hide_test: bool,
+    now: datetime | None = None,
+) -> tuple[list[str], list]:
+    """The WHERE clauses (and their values) shared by fetch_label_history() and
+    count_label_history(), so what the list shows and what the 'N hidden' line
+    counts can never disagree."""
+    clauses: list[str] = []
+    params: list = []
+    if job_number:
+        clauses.append("j.job_number = ?")
+        params.append(job_number)
+    if date:
+        try:
+            date = normalize_production_date(date)  # accepts YYMMDD (or the old YYYY-MM-DD)
+        except ValueError:
+            pass  # not a valid date - match it as typed (finds nothing)
+        clauses.append("j.production_date = ?")
+        params.append(date)
+    if sscc_contains:
+        # Escape LIKE wildcards so what the user types is matched literally.
+        escaped = sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("(l.sscc LIKE ? ESCAPE '\\' OR l.pallet_sscc LIKE ? ESCAPE '\\')")
+        params.append(f"%{escaped}%")
+        params.append(f"%{escaped}%")
+    if since_days is not None:
+        # created_at is stored as a UTC ISO-8601 string, which sorts the same as time does
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=since_days)
+        clauses.append("l.created_at >= ?")
+        params.append(cutoff.astimezone(timezone.utc).isoformat(timespec="microseconds"))
+    if hide_test:
+        clauses.append("j.test_mode = 0")
+    return clauses, params
+
+
 def fetch_label_history(
     db_path: Path | str,
     job_number: str | None = None,
     date: str | None = None,
     sscc_contains: str | None = None,
+    since_days: int | None = None,
+    hide_test: bool = False,
 ) -> list[FlatLabelRow]:
     """For the GUI history viewer - every logged label, optionally filtered
     to an exact job number and/or production date, and/or to SSCCs containing
@@ -415,35 +456,42 @@ def fetch_label_history(
     rows' pallet_sscc - so searching a pallet's SSCC brings back the pallet
     row and every carton scanned onto it. SQLite's LIKE is case-insensitive
     for ASCII, covering SSCCs with letters (e.g. TEST-SSCC-#####). Most
-    recent first."""
+    recent first.
+
+    since_days limits the list to labels logged in the last N days, and
+    hide_test drops test-mode labels. Both only change what is LISTED - nothing
+    is ever deleted - and the history viewer turns both off whenever the user
+    is searching, so an old or test label can always be found."""
     conn = _connect(db_path)
     try:
         query = _JOIN_SELECT
-        clauses = []
-        params = []
-        if job_number:
-            clauses.append("j.job_number = ?")
-            params.append(job_number)
-        if date:
-            try:
-                date = normalize_production_date(date)  # accepts YYMMDD (or the old YYYY-MM-DD)
-            except ValueError:
-                pass  # not a valid date - match it as typed (finds nothing)
-            clauses.append("j.production_date = ?")
-            params.append(date)
-        if sscc_contains:
-            # Escape LIKE wildcards so what the user types is matched literally.
-            escaped = (
-                sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            )
-            clauses.append("(l.sscc LIKE ? ESCAPE '\\' OR l.pallet_sscc LIKE ? ESCAPE '\\')")
-            params.append(f"%{escaped}%")
-            params.append(f"%{escaped}%")
+        clauses, params = _history_filters(job_number, date, sscc_contains, since_days, hide_test)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY l.id DESC"
         cur = conn.execute(query, params)
         return [_row_to_flat(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_label_history(
+    db_path: Path | str,
+    job_number: str | None = None,
+    date: str | None = None,
+    sscc_contains: str | None = None,
+    since_days: int | None = None,
+    hide_test: bool = False,
+) -> int:
+    """How many rows fetch_label_history() would return for the same filters
+    (used for the 'N hidden' line in the history viewer)."""
+    conn = _connect(db_path)
+    try:
+        clauses, params = _history_filters(job_number, date, sscc_contains, since_days, hide_test)
+        query = "SELECT COUNT(*) FROM labels l JOIN jobs j ON j.job_number = l.job_number"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        return conn.execute(query, params).fetchone()[0]
     finally:
         conn.close()
 
