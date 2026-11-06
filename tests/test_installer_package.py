@@ -135,13 +135,13 @@ def _staged_version(staged: Path) -> str:
 
 
 def test_the_package_is_stamped_1_2_0_beta(staged):
-    assert _staged_version(staged) == "1.2.0 Beta"
-    assert build.release_label() == "1.2.0 Beta"
+    assert _staged_version(staged) == "1.2.1 Beta"
+    assert build.release_label() == "1.2.1 Beta"
 
 
 def test_the_development_copy_keeps_its_own_1_1_x_version(staged):
     assert version_string().startswith("1.1.")  # untouched by the build
-    assert "1.2.0" not in (ROOT / "src" / "version.py").read_text(encoding="utf-8").split("MAJOR")[1].split("BUILD_DATE")[0]
+    assert "1.2.1" not in (ROOT / "src" / "version.py").read_text(encoding="utf-8").split("MAJOR")[1].split("BUILD_DATE")[0]
 
 
 def test_only_what_ships_is_staged_and_never_anyones_data(staged):
@@ -165,7 +165,7 @@ def test_prompts_for_the_install_folder_and_offers_c_barbell():
 
 
 def test_is_labelled_1_2_0_beta():
-    assert '#define AppVersionLabel "1.2.0 Beta"' in ISS
+    assert '#define AppVersionLabel "1.2.1 Beta"' in ISS
     assert "AppVersion={#AppVersionLabel}" in ISS
     assert "OutputBaseFilename=BarBell-Setup-{#AppVersion}-Beta" in ISS
 

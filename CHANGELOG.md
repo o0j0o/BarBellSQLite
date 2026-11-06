@@ -13,6 +13,8 @@ never hardcoded anywhere else. See that file for the versioning rules.
 - **Searching always covers all history, test labels included.** Typing in Job No, Date or SSCC contains ignores
   the period and the Hide-test checkbox (they grey out while a search is active), so a box that comes back for
   rework months after it shipped is found by its SSCC. Clearing the search returns to the short list.
+- Installer package renamed **BarBell-Setup-1.2.1-Beta.exe** (the 1.2.0 package had already been tried out); it
+  includes this History filter. The development copy stays on 1.1.x.
 - Nothing is deleted or moved: this only limits what is listed. `fetch_label_history()` takes `since_days` and
   `hide_test`, and `count_label_history()` gives the matching counts used for the "hidden" line.
 
