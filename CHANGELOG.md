@@ -3,6 +3,19 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.16 Beta - 2026-11-06
+
+- Job/Label History: the list is now short by default. It shows the **last 90 days** of **real** labels;
+  a new **Show** box (30 days / 90 days / 6 months / year / All history), a **Hide test labels** checkbox
+  (ticked by default) and a **Show all history** button change that. A line at the bottom says exactly what is
+  hidden - e.g. "Showing 22 of 1,086 label row(s). Hidden: 1,064 test label(s)." The age is when the label was
+  logged. On the development database this takes the list from 1,086 rows to 22 (1,064 of the rows were test labels).
+- **Searching always covers all history, test labels included.** Typing in Job No, Date or SSCC contains ignores
+  the period and the Hide-test checkbox (they grey out while a search is active), so a box that comes back for
+  rework months after it shipped is found by its SSCC. Clearing the search returns to the short list.
+- Nothing is deleted or moved: this only limits what is listed. `fetch_label_history()` takes `since_days` and
+  `hide_test`, and `count_label_history()` gives the matching counts used for the "hidden" line.
+
 ## 1.1.15 Beta - 2026-11-04
 
 - Installer build: the finished `BarBell-Setup-1.2.0-Beta.exe` is now copied to `installer/Output/` in the
