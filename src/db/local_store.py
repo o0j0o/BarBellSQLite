@@ -1034,9 +1034,12 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
     leading/trailing spaces are ignored). Returns None if BarBell has no such
     job.
 
-    Voided labels are left out: a pallet counts unless every one of its rows is
-    void, a carton likewise. A carton on no (live) pallet is listed in
-    unassociated_cartons. Print copies and reprints of one SSCC appear once.
+    One entry per label printed in a run: the extra print copies (copy 2, 3...)
+    and reprint rows are not separate cartons, and voided labels are left out.
+    It is deliberately NOT grouped by SSCC: Test-mode SSCCs (TEST-SSCC-00001...)
+    start again at 1 on every run, so the same job can hold several cartons that
+    share a test SSCC - all of them are listed. (Real SSCCs are never reused.)
+    A carton on no (live) pallet is listed in unassociated_cartons.
     """
     job_number = job_number.strip()
     conn = _connect(db_path)
@@ -1057,9 +1060,8 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
                 SELECT sscc, quantity, COALESCE(production_date, ?), pallet_sscc, carton_count
                 FROM labels
                 WHERE job_number = ? AND label_type = ?
-                GROUP BY sscc
-                HAVING SUM(status != 'void') > 0
-                ORDER BY MIN(id)
+                  AND label_copy_index = 1 AND status NOT IN ('void', 'reprint')
+                ORDER BY id
                 """,
                 (job_production_date, stored_job, label_type),
             ).fetchall()

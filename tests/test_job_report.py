@@ -12,6 +12,7 @@ import pytest
 
 from src.db.local_store import (
     create_pallet,
+    create_reprint_rows,
     fetch_job_report,
     record_generation_run,
     void_pallet,
@@ -263,3 +264,30 @@ def test_job_report_is_in_the_home_menu_and_beside_pallet_report_in_history(app,
 
 def test_no_pallet_heading_text():
     assert NO_PALLET_HEADING == "No Associated Pallet SSCC"
+
+
+def test_repeated_test_runs_that_reuse_the_same_test_sscc_are_all_listed(tmp_path):
+    """Regression: job 117458 had 11 test cartons from 3 runs, but the report showed 5,
+    because Test-mode SSCCs restart at TEST-SSCC-00001 on every run and the report grouped
+    by SSCC. Every label row of the job must appear."""
+    db = tmp_path / "b.db"
+    for run_size in (5, 4, 2):
+        ssccs = [f"TEST-SSCC-{i:05d}" for i in range(1, run_size + 1)]
+        record_generation_run(
+            carton_rows(ssccs, job="117458"), units_per_package=10000,
+            labels_per_package=1, test_mode=True, db_path=db,
+        )
+    report = fetch_job_report("117458", db)
+    assert report.carton_total == 11
+    assert len(report.unassociated_cartons) == 11
+    assert [c.sscc for c in report.unassociated_cartons].count("TEST-SSCC-00001") == 3
+
+
+def test_reprints_and_extra_print_copies_are_not_extra_cartons(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db, cartons=3, on_pallet_a=0, on_pallet_b=0, copies=2)
+    with sqlite3.connect(db) as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM labels ORDER BY id")]
+    create_reprint_rows(ids, db)  # reprint every label (both copies of all 3 cartons)
+    report = fetch_job_report("122984", db)
+    assert report.carton_total == 3

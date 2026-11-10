@@ -22,6 +22,9 @@ never hardcoded anywhere else. See that file for the versioning rules.
 - The Job Report opens from **Home > Job Report...** and from a **Job Report** button next to Pallet Report (PDF)
   on the Job/Label History form (pre-filled with the checked rows' job, or the Job No box).
 - Operator Guide updated with both features and screenshots (made from a dummy database).
+- Job Report fix: it listed only one carton per SSCC, so a job made in Test mode several times (whose test SSCCs
+  restart at TEST-SSCC-00001 each run) showed 5 of its 11 cartons. It now lists every carton label logged for the
+  job (one per label printed in a run; extra print copies and reprints still count once, voided labels are left out).
 
 ## 1.1.16 Beta - 2026-11-06
 
