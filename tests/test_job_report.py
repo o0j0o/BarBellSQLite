@@ -291,3 +291,94 @@ def test_reprints_and_extra_print_copies_are_not_extra_cartons(tmp_path):
     create_reprint_rows(ids, db)  # reprint every label (both copies of all 3 cartons)
     report = fetch_job_report("122984", db)
     assert report.carton_total == 3
+
+
+# --- mixed products in one job (1.1.17) --------------------------------------------------------
+
+
+def _run(db, job, ssccs, *, description, gtin, batch, item="233458", quantity=10000):
+    rows = [
+        LabelRow(
+            job_number=job, packing_slip_number="100495", customer_number="J00005",
+            customer_name="J. Wray & Nephew Ltd.", product_no=batch[-5:], item_number=item,
+            item_description=description, quantity=quantity, batch=batch, production_date="260505",
+            sscc=s, gtin=gtin, package_index=i, label_copy_index=1,
+        )
+        for i, s in enumerate(ssccs, start=1)
+    ]
+    record_generation_run(rows, units_per_package=quantity, labels_per_package=1, test_mode=False, db_path=db)
+
+
+def test_each_carton_reports_its_own_product_when_a_job_has_several(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coconut Rum Cream", gtin="00000000000011", batch="11745837609")
+    _run(db, "117458", [sscc(3)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    _run(db, "117458", [sscc(4)], description="Rum Cream", gtin="00000000000035", batch="11745837611")
+
+    report = fetch_job_report("117458", db)
+    got = [(c.sscc, c.description, c.gtin, c.batch) for c in report.unassociated_cartons]
+    assert got == [
+        (sscc(1), "Coconut Rum Cream", "00000000000011", "11745837609"),
+        (sscc(2), "Coconut Rum Cream", "00000000000011", "11745837609"),
+        (sscc(3), "Coffee Rum Cream", "00000000000028", "11745837610"),
+        (sscc(4), "Rum Cream", "00000000000035", "11745837611"),
+    ]
+
+
+def test_a_pallet_takes_its_product_from_its_cartons_not_the_jobs_latest_run(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coconut Rum Cream", gtin="00000000000011", batch="11745837609")
+    create_pallet(
+        carton_ssccs=[sscc(1), sscc(2)], job_number="117458", quantity=20000, production_date="260505",
+        packing_slip_number="100495", pallet_sscc="008600157112090001", carton_count=2, db_path=db,
+    )
+    _run(db, "117458", [sscc(3)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+
+    report = fetch_job_report("117458", db)
+    pallet = report.pallets[0]
+    assert (pallet.description, pallet.gtin, pallet.batch) == ("Coconut Rum Cream", "00000000000011", "11745837609")
+    assert [c.description for c in report.unassociated_cartons] == ["Coffee Rum Cream"]
+
+
+def test_labels_logged_before_the_snapshot_existed_fall_back_to_the_job_row(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE labels SET item_description = NULL, gtin = NULL, batch = NULL, item_number = NULL")
+    c = fetch_job_report("117458", db).unassociated_cartons[0]
+    assert (c.description, c.gtin, c.batch) == ("Coffee Rum Cream", "00000000000028", "11745837610")
+
+
+def test_reprints_carry_the_snapshot_and_an_old_database_is_upgraded(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    with sqlite3.connect(db) as conn:
+        original = conn.execute("SELECT id FROM labels").fetchone()[0]
+    create_reprint_rows([original], db)
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute("SELECT status, item_description, gtin, batch FROM labels ORDER BY id").fetchall()
+    assert rows[1] == ("reprint", "Coffee Rum Cream", "00000000000028", "11745837610")
+
+    # a database from before the new columns: rebuild labels without them, then open it again
+    old = tmp_path / "old.db"
+    with sqlite3.connect(db) as src, sqlite3.connect(old) as dst:
+        src.backup(dst)
+    with sqlite3.connect(old) as conn:
+        for col in ("item_number", "item_description", "gtin", "batch", "product_no"):
+            conn.execute(f"ALTER TABLE labels DROP COLUMN {col}")
+    report = fetch_job_report("117458", old)  # opening migrates it
+    assert report.unassociated_cartons[0].description == "Coffee Rum Cream"  # from the job row
+    with sqlite3.connect(old) as conn:
+        assert "gtin" in {r[1] for r in conn.execute("PRAGMA table_info(labels)")}
+
+
+def test_the_table_has_the_requested_columns_and_the_header_has_no_gtin():
+    import inspect
+
+    import src.job_report as jr
+
+    assert jr.BATCH_HEADING == "Batch (Job No. - P/N)"
+    src_text = inspect.getsource(jr)
+    assert '("GTIN:", report.gtin' not in src_text  # the page header no longer carries a GTIN
+    order = [jr.COL_NUM, jr.COL_SSCC, jr.COL_DESC, jr.COL_GTIN, jr.COL_DATE_CENTER, jr.COL_QTY_RIGHT, jr.COL_BATCH]
+    assert order == sorted(order)

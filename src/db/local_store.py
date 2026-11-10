@@ -121,7 +121,12 @@ CREATE TABLE IF NOT EXISTS labels (
     pallet_sscc TEXT,
     carton_count INTEGER,
     production_date TEXT,
-    packing_slip_number TEXT
+    packing_slip_number TEXT,
+    item_number TEXT,
+    item_description TEXT,
+    gtin TEXT,
+    batch TEXT,
+    product_no TEXT
 );
 
 CREATE TABLE IF NOT EXISTS setup_credentials (
@@ -141,6 +146,14 @@ _LABELS_MIGRATION_COLUMNS = [
     ("carton_count", "INTEGER"),
     ("production_date", "TEXT"),
     ("packing_slip_number", "TEXT"),
+    # Product snapshot per label (1.1.17): the jobs row only keeps the LATEST run of a job number, so a
+    # job run for several products could not say which product a given carton was. Labels from before
+    # this column existed stay NULL (not guessed) and readers fall back to the jobs row.
+    ("item_number", "TEXT"),
+    ("item_description", "TEXT"),
+    ("gtin", "TEXT"),
+    ("batch", "TEXT"),
+    ("product_no", "TEXT"),
 ]
 
 _JOIN_SELECT = """
@@ -387,12 +400,14 @@ def record_generation_run(
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index,
                     quantity, status, superseded_id, created_at,
-                    production_date, packing_slip_number
-                ) VALUES (?, ?, ?, ?, ?, 'original', NULL, ?, ?, ?)
+                    production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, ?, ?, ?, 'original', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     r.job_number, r.sscc, r.package_index, r.label_copy_index, r.quantity, now,
                     normalize_production_date(r.production_date), r.packing_slip_number,
+                    r.item_number, r.item_description, r.gtin, r.batch, r.product_no,
                 ),
             )
             label_ids.append(cur.lastrowid)
@@ -548,7 +563,8 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
         for original_id in label_ids:
             cur = conn.execute(
                 "SELECT job_number, sscc, carton_sequence, label_copy_index, quantity, "
-                "label_type, pallet_sscc, carton_count, production_date, packing_slip_number "
+                "label_type, pallet_sscc, carton_count, production_date, packing_slip_number, "
+                "item_number, item_description, gtin, batch, product_no "
                 "FROM labels WHERE id = ?",
                 (original_id,),
             )
@@ -558,6 +574,7 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
             (
                 job_number, sscc, carton_sequence, label_copy_index, quantity,
                 label_type, pallet_sscc, carton_count, production_date, packing_slip_number,
+                item_number, item_description, gtin, batch, product_no,
             ) = original
 
             cur = conn.execute(
@@ -565,12 +582,14 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index,
                     quantity, status, superseded_id, created_at, label_type,
-                    pallet_sscc, carton_count, production_date, packing_slip_number
-                ) VALUES (?, ?, ?, ?, ?, 'reprint', ?, ?, ?, ?, ?, ?, ?)
+                    pallet_sscc, carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, ?, ?, ?, 'reprint', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_number, sscc, carton_sequence, label_copy_index, quantity, original_id, now,
                     label_type, pallet_sscc, carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no,
                 ),
             )
             new_ids.append(cur.lastrowid)
@@ -794,6 +813,21 @@ def create_pallet(
         if job_row is None:
             raise ValueError(f"No jobs row found for job_number {job_number!r}")
 
+        # The pallet is mono-product (the Pallet screen enforces it), so its product is that of
+        # its cartons - not the jobs row, which only knows the job's latest run.
+        carton_product = conn.execute(
+            """
+            SELECT COALESCE(l.item_number, j.item_number), COALESCE(l.item_description, j.item_description),
+                   COALESCE(l.gtin, j.gtin), COALESCE(l.batch, j.batch), COALESCE(l.product_no, j.product_no)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.sscc = ? AND l.label_type = 'CARTON' AND l.job_number = ?
+            ORDER BY l.id DESC LIMIT 1
+            """,
+            (carton_ssccs[0], job_number),
+        ).fetchone()
+        if carton_product is None:
+            carton_product = (None, None, None, None, None)
+
         new_ids = []
         for copy_index in (1, 2):
             cur = conn.execute(
@@ -801,11 +835,12 @@ def create_pallet(
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index, quantity,
                     status, superseded_id, created_at, label_type, pallet_sscc,
-                    carton_count, production_date, packing_slip_number
-                ) VALUES (?, ?, 1, ?, ?, 'original', NULL, ?, 'PALLET', NULL, ?, ?, ?)
+                    carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, 1, ?, ?, 'original', NULL, ?, 'PALLET', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (job_number, pallet_sscc, copy_index, quantity, now, carton_count,
-                 production_date, packing_slip_number),
+                 production_date, packing_slip_number, *carton_product),
             )
             new_ids.append(cur.lastrowid)
 
@@ -995,6 +1030,7 @@ class JobReportCarton:
     quantity: int
     batch: str
     pallet_sscc: str | None
+    gtin: str | None = None
 
 
 @dataclass
@@ -1034,6 +1070,10 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
     leading/trailing spaces are ignored). Returns None if BarBell has no such
     job.
 
+    Each carton and pallet reports its OWN product (description, GTIN, batch) as saved on its
+    label, so a job with several products lists each correctly. Labels logged before 1.1.17
+    did not save that and fall back to the job's latest run.
+
     One entry per label printed in a run: the extra print copies (copy 2, 3...)
     and reprint rows are not separate cartons, and voided labels are left out.
     It is deliberately NOT grouped by SSCC: Test-mode SSCCs (TEST-SSCC-00001...)
@@ -1057,13 +1097,14 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
         def rows(label_type: str):
             return conn.execute(
                 """
-                SELECT sscc, quantity, COALESCE(production_date, ?), pallet_sscc, carton_count
+                SELECT sscc, quantity, COALESCE(production_date, ?), pallet_sscc, carton_count,
+                       COALESCE(item_description, ?), COALESCE(gtin, ?), COALESCE(batch, ?)
                 FROM labels
                 WHERE job_number = ? AND label_type = ?
                   AND label_copy_index = 1 AND status NOT IN ('void', 'reprint')
                 ORDER BY id
                 """,
-                (job_production_date, stored_job, label_type),
+                (job_production_date, item_description, gtin, batch, stored_job, label_type),
             ).fetchall()
 
         pallet_rows = rows(LABEL_TYPE_PALLET)
@@ -1071,10 +1112,12 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
 
         cartons_by_pallet: dict[str, list[JobReportCarton]] = {}
         unassociated: list[JobReportCarton] = []
-        for sscc, quantity, production_date, pallet_sscc, _ in rows(LABEL_TYPE_CARTON):
+        for sscc, quantity, production_date, pallet_sscc, _, c_description, c_gtin, c_batch in rows(
+            LABEL_TYPE_CARTON
+        ):
             carton = JobReportCarton(
-                sscc=sscc, description=item_description, production_date=production_date,
-                quantity=quantity, batch=batch, pallet_sscc=pallet_sscc,
+                sscc=sscc, description=c_description, production_date=production_date,
+                quantity=quantity, batch=c_batch, pallet_sscc=pallet_sscc, gtin=c_gtin,
             )
             if pallet_sscc and pallet_sscc in live_pallets:
                 cartons_by_pallet.setdefault(pallet_sscc, []).append(carton)
@@ -1083,12 +1126,12 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
 
         pallets = [
             JobReportPallet(
-                sscc=sscc, gtin=gtin, description=item_description, production_date=production_date,
-                quantity=quantity, batch=batch,
+                sscc=sscc, gtin=p_gtin, description=p_description, production_date=production_date,
+                quantity=quantity, batch=p_batch,
                 carton_count=carton_count if carton_count is not None else len(cartons_by_pallet.get(sscc, [])),
                 cartons=cartons_by_pallet.get(sscc, []),
             )
-            for sscc, quantity, production_date, _, carton_count in pallet_rows
+            for sscc, quantity, production_date, _, carton_count, p_description, p_gtin, p_batch in pallet_rows
         ]
         return JobReport(
             job_number=stored_job, packing_slip_number=slip, customer_name=customer,

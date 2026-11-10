@@ -41,6 +41,14 @@ from src.version import version_string
 
 NO_PALLET_HEADING = "No Associated Pallet SSCC"
 
+
+def _fit_bold(draw, text: str, max_px: int, start_pt: float, min_pt: float):
+    """The largest bold font up to start_pt in which text fits max_px."""
+    pt = start_pt
+    while pt > min_pt and _text_width(draw, text, _font(pt, bold=True)) > max_px:
+        pt -= 0.5
+    return _font(pt, bold=True)
+
 _PALLET_MODULE_MM = 3 * 25.4 / DPI
 FIRST_PAGE_TOP_MM = 56.0
 LATER_PAGE_TOP_MM = 35.0
@@ -51,12 +59,16 @@ ROW_H_MM = 5.8
 SECTION_GAP_MM = 5.0
 HEADING_H_MM = 9.0
 
+# Carton table columns: # | Carton SSCC | Description | GTIN | Production Date | Qty per Carton | Batch.
+# GTIN is a column (not just in the page header) because one job can hold several products.
 COL_NUM = 13.0
-COL_SSCC = 24.0
-COL_DESC = 66.0
-COL_DATE = 168.0
-COL_QTY_RIGHT = 222.0
-COL_BATCH = 228.0
+COL_SSCC = 22.0
+COL_DESC = 58.0
+COL_GTIN = 140.0
+COL_DATE_CENTER = 181.0  # the production date is centred on this line
+COL_QTY_RIGHT = 222.0  # quantity is right-aligned to this edge
+COL_BATCH = 227.0
+BATCH_HEADING = "Batch (Job No. - P/N)"  # the batch is the job number followed by the product's P/N
 COL_END = PAGE_W_MM - MARGIN_MM
 
 _BOTTOM_MM = PAGE_H_MM - MARGIN_MM - FOOTER_H_MM
@@ -75,6 +87,7 @@ class _Layout:
         self.y = 0.0
         self.left = _px(MARGIN_MM)
         self.right = _px(COL_END)
+        self.desc_font = _font(9.5)
 
     # --- pages ------------------------------------------------------------
 
@@ -97,9 +110,6 @@ class _Layout:
                 ("Job No:", report.job_number),
                 ("Packing Slip:", report.packing_slip_number or "-"),
                 ("Customer:", report.customer_name or "-"),
-                ("Item:", report.item_number),
-                ("Batch:", report.batch),
-                ("GTIN:", report.gtin or "-"),
             ]
             for i, (label, value) in enumerate(details):
                 col, row = divmod(i, 3)
@@ -134,10 +144,13 @@ class _Layout:
         draw.text((_px(COL_NUM), ty), "#", font=head_font, fill=0)
         draw.text((_px(COL_SSCC), ty), "Carton SSCC", font=head_font, fill=0)
         draw.text((_px(COL_DESC), ty), "Description", font=head_font, fill=0)
-        draw.text((_px(COL_DATE), ty), "Production Date", font=head_font, fill=0)
+        draw.text((_px(COL_GTIN), ty), "GTIN", font=head_font, fill=0)
+        date = "Production Date"
+        draw.text((_px(COL_DATE_CENTER) - _text_width(draw, date, head_font) // 2, ty), date, font=head_font, fill=0)
         qty = "Qty per Carton"
         draw.text((_px(COL_QTY_RIGHT) - _text_width(draw, qty, head_font), ty), qty, font=head_font, fill=0)
-        draw.text((_px(COL_BATCH), ty), "Batch", font=head_font, fill=0)
+        batch_font = _fit_bold(draw, BATCH_HEADING, _px(COL_END - COL_BATCH), 9.0, 6.5)
+        draw.text((_px(COL_BATCH), ty), BATCH_HEADING, font=batch_font, fill=0)
         rule_y = _px(self.y + TABLE_HEAD_H_MM) - 2
         draw.line([(self.left, rule_y), (self.right, rule_y)], fill=0, width=3)
         self.y += TABLE_HEAD_H_MM
@@ -147,12 +160,18 @@ class _Layout:
         top = _px(self.y + 0.9)
         body = _font(9.5)
         draw.text((_px(COL_NUM), top), str(index), font=_font(8.5), fill=0)
-        draw.text((_px(COL_SSCC), top), carton.sscc, font=_font(10, bold=True), fill=0)
+        draw.text((_px(COL_SSCC), top), carton.sscc, font=_fit_bold(draw, carton.sscc, _px(COL_DESC - COL_SSCC - 2), 9.5, 6.5), fill=0)
         draw.text(
             (_px(COL_DESC), top), carton.description,
-            font=_fit_font(draw, carton.description, _px(COL_DATE - COL_DESC - 3), 9.5, 6.5), fill=0,
+            font=self.desc_font, fill=0,
         )
-        draw.text((_px(COL_DATE), top), carton.production_date, font=body, fill=0)
+        gtin = carton.gtin or "-"
+        draw.text((_px(COL_GTIN), top), gtin, font=body, fill=0)
+        date_font = body
+        draw.text(
+            (_px(COL_DATE_CENTER) - _text_width(draw, carton.production_date, date_font) // 2, top),
+            carton.production_date, font=date_font, fill=0,
+        )
         qty = f"{carton.quantity:,}"
         draw.text((_px(COL_QTY_RIGHT) - _text_width(draw, qty, body), top), qty, font=body, fill=0)
         draw.text(
@@ -166,6 +185,12 @@ class _Layout:
         """The carton table, repeating its column header (and what it belongs
         to) when it runs onto a new page."""
         self.table_header()
+        # one description size for the whole table (the smallest any row needs), so rows look alike
+        room = _px(COL_GTIN - COL_DESC - 2)
+        self.desc_font = min(
+            (_fit_font(self.draw, c.description, room, 9.5, 6.0) for c in cartons),
+            key=lambda f: f.size, default=_font(9.5),
+        )
         for index, carton in enumerate(cartons, start=1):
             if self.y + ROW_H_MM > _BOTTOM_MM:
                 self.new_page()

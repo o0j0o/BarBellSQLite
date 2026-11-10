@@ -25,6 +25,14 @@ never hardcoded anywhere else. See that file for the versioning rules.
 - Job Report fix: it listed only one carton per SSCC, so a job made in Test mode several times (whose test SSCCs
   restart at TEST-SSCC-00001 each run) showed 5 of its 11 cartons. It now lists every carton label logged for the
   job (one per label printed in a run; extra print copies and reprints still count once, voided labels are left out).
+- Job Report for jobs with several products: the carton table is now **# | Carton SSCC | Description | GTIN |
+  Production Date (centred) | Qty per Carton | Batch (Job No. - P/N)**. The page header no longer shows GTIN, Item or
+  Batch (they belong to each carton, not the job).
+  Every label now saves its own product (item number, description, GTIN, batch, P/N) when it is logged - before,
+  only the job's *latest* run was kept, so a job run for Coconut, Coffee and plain Rum Cream showed all of them
+  as one product. New `labels` columns are added automatically the first time a database is opened (the file is
+  backed up first, as for earlier upgrades). A pallet takes its product from its cartons; reprints copy it.
+  Labels logged before this version have no saved product and still show the job's latest run's product.
 
 ## 1.1.16 Beta - 2026-11-06
 
