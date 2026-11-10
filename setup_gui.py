@@ -21,11 +21,21 @@ import argparse
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
+from PIL import Image, ImageDraw, ImageTk
 
 from src.backup import BackupError, REASON_MANUAL, create_backup, restore_backup, summarize_restore
+from src.db.local_store import clear_setup_password_hash, set_setup_password_hash
 from src.settings import JAMAICA_LABEL_TRAXX_DSN, load_settings, save_settings
-from src.setup_access import SetupAccessLevel
+from src.setup_access import (
+    MIN_SETUP_PASSWORD_LENGTH,
+    STANDARD_SETUP_PASSWORD_DEFAULT,
+    SetupAccessLevel,
+    hash_setup_password,
+    is_admin_password,
+    validate_new_setup_password,
+)
 from src.sscc import (
     SSCCGenerator,
     archive_and_reset_state_file,
@@ -45,6 +55,21 @@ LABEL_TRAXX_PLANTS = {
     "Barbados (LT64)": "LT64",
     "Jamaica (LCJ JAM)": JAMAICA_LABEL_TRAXX_DSN,
 }
+
+
+def make_eye_icon(crossed: bool, size: int = 20) -> Image.Image:
+    """A small eye drawn with Pillow (no icon file or emoji font needed); crossed
+    out when the password is hidden. Drawn at 4x and shrunk so the edges are smooth."""
+    big = size * 4
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    ink = (60, 60, 60, 255)
+    mid = big // 2
+    draw.ellipse((big * 0.08, big * 0.28, big * 0.92, big * 0.72), outline=ink, width=max(2, big // 16))
+    draw.ellipse((mid - big * 0.14, mid - big * 0.14, mid + big * 0.14, mid + big * 0.14), fill=ink)
+    if crossed:
+        draw.line((big * 0.15, big * 0.85, big * 0.85, big * 0.15), fill=(200, 30, 30, 255), width=max(3, big // 12))
+    return img.resize((size, size), Image.LANCZOS)
 
 
 def validate_company_prefix(raw: str) -> str:
@@ -83,6 +108,7 @@ class SetupGUI(tk.Tk):
         self._build_counter_section()
         self._build_demo_section()
         self._build_backup_section()
+        self._build_password_section()
         self._build_buttons()
 
         self._on_plant_changed()  # populates the GS1 fields + counter status for the initial plant
@@ -307,6 +333,112 @@ class SetupGUI(tk.Tk):
             ttk.Label(
                 buttons, text="Restore needs the administrator Setup password.", font=("", 8)
             ).pack(side="left", padx=(10, 0))
+
+    def _build_password_section(self):
+        """Change the standard setup password (the one that opens Setup), and
+        reset it to the default. The Admin (Greg) password is never touched
+        here. See src/setup_access.py."""
+        frame = ttk.LabelFrame(self.body, text="Setup Password", padding=10)
+        frame.grid(row=6, column=0, sticky="ew", padx=10, pady=5)
+        frame.columnconfigure(1, weight=1)
+
+        # PhotoImages must be kept referenced or Tk drops them.
+        self._eye_open = ImageTk.PhotoImage(make_eye_icon(crossed=False))
+        self._eye_closed = ImageTk.PhotoImage(make_eye_icon(crossed=True))
+
+        self.new_password_var = tk.StringVar()
+        self.confirm_password_var = tk.StringVar()
+        self.new_password_entry = self._password_row(frame, 0, "New password:", self.new_password_var)
+        self.confirm_password_entry = self._password_row(frame, 1, "Confirm password:", self.confirm_password_var)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.change_password_button = ttk.Button(
+            buttons, text="Change Setup Password", command=self._change_setup_password
+        )
+        self.change_password_button.pack(side="left")
+        self.reset_password_button = ttk.Button(
+            buttons, text="Reset to Default...", command=self._reset_setup_password
+        )
+        self.reset_password_button.pack(side="left", padx=(8, 0))
+        self._note(
+            frame,
+            f"Changes the password that opens Setup (at least {MIN_SETUP_PASSWORD_LENGTH} characters; "
+            "type it twice). It is saved scrambled (hashed) in BarBell's database, never as plain text. "
+            "Takes effect immediately - no need to Save Settings. Reset to Default puts the original "
+            "Setup password back and needs the Admin password.",
+        ).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+
+    def _password_row(self, frame, row, label, variable):
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        entry = ttk.Entry(frame, textvariable=variable, show="*", width=30)
+        entry.grid(row=row, column=1, sticky="w", padx=5, pady=2)
+        button = ttk.Button(frame, image=self._eye_closed, width=3)
+        button.grid(row=row, column=2, sticky="w")
+
+        def toggle():
+            hidden = entry.cget("show") == "*"
+            entry.config(show="" if hidden else "*")
+            button.config(image=self._eye_open if hidden else self._eye_closed)
+
+        button.config(command=toggle)
+        entry.eye_button = button  # reachable for tests
+        return entry
+
+    def _change_setup_password(self):
+        new, confirm = self.new_password_var.get(), self.confirm_password_var.get()
+        try:
+            validate_new_setup_password(new, confirm)
+        except ValueError as exc:
+            messagebox.showerror("Setup password", str(exc))
+            return
+        try:
+            set_setup_password_hash(hash_setup_password(new), self.settings.local_db_file)
+        except Exception as exc:  # noqa: BLE001 - say what failed; never include the password
+            messagebox.showerror("Setup password", f"The password could not be saved:\n\n{exc}")
+            return
+        # A plain-text password left in settings.json from before is now dead
+        # weight (the hash wins); put the default back so no old one lingers.
+        if self.settings.setup_password != STANDARD_SETUP_PASSWORD_DEFAULT:
+            self.settings = replace(self.settings, setup_password=STANDARD_SETUP_PASSWORD_DEFAULT)
+            save_settings(self.settings)
+        self.new_password_var.set("")
+        self.confirm_password_var.set("")
+        messagebox.showinfo("Setup password", "The Setup password has been changed.")
+
+    def _reset_setup_password(self):
+        """Back to the default Setup password. Only after the Admin (Greg)
+        password: asked for here unless this Setup was already opened with it."""
+        if self.is_admin:
+            if not messagebox.askyesno(
+                "Reset Setup password",
+                "Reset the Setup password to the default?",
+                icon="warning",
+            ):
+                return
+        else:
+            entered = simpledialog.askstring(
+                "Reset Setup password",
+                "Enter the Admin password to reset the Setup password to the default:",
+                show="*",
+                parent=self,
+            )
+            if entered is None:
+                return
+            if not is_admin_password(entered):
+                messagebox.showerror("Reset Setup password", "That password is incorrect.")
+                return
+        try:
+            clear_setup_password_hash(self.settings.local_db_file)
+            if self.settings.setup_password != STANDARD_SETUP_PASSWORD_DEFAULT:
+                self.settings = replace(self.settings, setup_password=STANDARD_SETUP_PASSWORD_DEFAULT)
+                save_settings(self.settings)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Reset Setup password", f"The password could not be reset:\n\n{exc}")
+            return
+        self.new_password_var.set("")
+        self.confirm_password_var.set("")
+        messagebox.showinfo("Reset Setup password", "The Setup password has been reset to the default.")
 
     def _build_buttons(self):
         frame = self._button_bar  # pinned below the scrolling form (see _build_scroll_area)

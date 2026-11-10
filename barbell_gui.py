@@ -35,8 +35,10 @@ from src.db.local_store import (
     create_pallet,
     create_reprint_rows,
     count_label_history,
+    fetch_job_report,
     fetch_label_history,
     fetch_pallet_report,
+    get_setup_password_hash,
     find_carton_by_sscc,
     list_available_cartons,
     record_generation_run,
@@ -60,6 +62,7 @@ from src.labels import (
     list_packing_slips_for_job,
 )
 from src.help_link import resolve_help_url
+from src.job_report import build_job_report_pdf, render_job_report_pages
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import DEFAULT_SETTINGS_FILE, load_settings
@@ -1181,11 +1184,150 @@ class BarBellApp(tk.Tk):
             action_frame, text="Pallet Report (PDF)", command=pallet_report_selected
         ).pack(side="left", padx=(8, 0))
 
+        def job_report_for_selection():
+            """Opens the Job Report, filled in with the checked rows' job (when
+            they all share one) or else whatever is typed in the Job No box."""
+            jobs = {
+                tree.item(iid, "values")[1] for iid in tree.get_children() if iid in checked_ids
+            }
+            job = next(iter(jobs)) if len(jobs) == 1 else job_filter_var.get().strip()
+            self._show_job_report_screen(job_number=str(job))
+
+        ttk.Button(
+            action_frame, text="Job Report", command=job_report_for_selection
+        ).pack(side="left", padx=(8, 0))
+
         refresh()
         # Registered after the initial refresh() so setting up the window
         # doesn't fire it. Every keystroke in the SSCC box re-filters (which,
         # like any new search, clears checkboxes - see refresh()).
         sscc_filter_var.trace_add("write", lambda *_: refresh())
+
+    # --- job report --------------------------------------------------------
+
+    def _show_job_report_screen(self, job_number: str = ""):
+        """
+        Job Report: type the Job Number a label was first made under and see every
+        pallet - with its SSCC and GS1-128 text - and, under each, its cartons;
+        cartons on no pallet come last. Reads only BarBell's own SQLite data (no
+        Label Traxx / ODBC). The same pages that show on screen can be exported to
+        a PDF for printing. See src/job_report.py.
+        """
+        win = tk.Toplevel(self)
+        win.title("Job Report")
+        win.geometry("1260x780")
+        win.minsize(700, 400)
+        win.report = None  # the JobReport currently shown, if any
+        win.page_photos = []  # keep PhotoImages referenced - Tk drops them otherwise
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(side="top", fill="x")
+        ttk.Label(top, text="Job Number:").pack(side="left")
+        job_var = tk.StringVar(value=job_number)
+        job_entry = ttk.Entry(top, textvariable=job_var, width=16)
+        job_entry.pack(side="left", padx=(4, 10))
+        run_button = ttk.Button(top, text="Run Report")
+        run_button.pack(side="left")
+        export_button = ttk.Button(top, text="Export PDF", state="disabled")
+        export_button.pack(side="left", padx=(8, 0))
+
+        message_label = ttk.Label(win, text="", padding=(10, 0, 10, 6), font=("", 10, "bold"))
+        message_label.pack(side="top", fill="x")
+
+        view = ttk.Frame(win, padding=(10, 0, 10, 10))
+        view.pack(side="top", fill="both", expand=True)
+        view.rowconfigure(0, weight=1)
+        view.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(view, background="#808080", highlightthickness=0)
+        v_scroll = ttk.Scrollbar(view, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=v_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+
+        def on_wheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        canvas.bind("<MouseWheel>", on_wheel)
+
+        def db_path():
+            return self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file
+
+        def clear_view():
+            canvas.delete("all")
+            win.page_photos = []
+            canvas.configure(scrollregion=(0, 0, 0, 0))
+            win.report = None
+            export_button.config(state="disabled")
+
+        def run_report(_event=None):
+            entered = job_var.get().strip()
+            clear_view()
+            if not entered:
+                message_label.config(text="Enter a Job Number.", foreground="#b00020")
+                return
+            try:
+                report = fetch_job_report(entered, db_path())
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Job Report failed", str(exc), parent=win)
+                return
+            if report is None:
+                message_label.config(text="Job is Not in BarBell", foreground="#b00020")
+                return
+
+            win.report = report
+            pages = render_job_report_pages(report, company_name=self.settings.company_name)
+            width = 1200  # about 109 dpi: 10pt text is comfortably readable
+            y = 8
+            for page in pages:
+                shown = page.convert("L").resize((width, round(page.height * width / page.width)), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(shown)
+                win.page_photos.append(photo)
+                canvas.create_image(8, y, image=photo, anchor="nw")
+                y += shown.height + 8
+            canvas.configure(scrollregion=(0, 0, width + 16, y))
+            canvas.yview_moveto(0)
+            export_button.config(state="normal")
+            message_label.config(
+                text=f"Job {report.job_number}: {len(report.pallets)} pallet(s), "
+                f"{report.carton_total} carton(s) - {len(pages)} page(s).",
+                foreground="",
+            )
+
+        def export_pdf():
+            report = win.report
+            if report is None:
+                return
+            demo = self.settings.demo_mode
+            prefix = "DEMO_" if demo else ""
+            suffix = "_TEST" if report.test_mode else ""
+            safe_job = "".join(c if c.isalnum() or c in "-_" else "_" for c in report.job_number)
+            try:
+                out_path = build_job_report_pdf(
+                    report,
+                    Path(self.settings.output_dir) / f"{prefix}Job_report_{safe_job}{suffix}.pdf",
+                    company_name=self.settings.company_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Job report failed", str(exc), parent=win)
+                return
+            try:
+                self._open_file(out_path)
+            except OSError as exc:
+                messagebox.showinfo(
+                    "Job report saved",
+                    f"Saved to:\n{out_path}\n\n(It couldn't be opened automatically: {exc})",
+                    parent=win,
+                )
+
+        run_button.config(command=run_report)
+        export_button.config(command=export_pdf)
+        job_entry.bind("<Return>", run_report)
+        win.job_var, win.run_report, win.export_pdf = job_var, run_report, export_pdf
+        win.message_label, win.export_button = message_label, export_button
+        job_entry.focus_set()
+        if job_number.strip():
+            run_report()
+        return win
 
     # --- pallet labels -----------------------------------------------------
 
@@ -1774,7 +1916,12 @@ class BarBellApp(tk.Tk):
             return
 
         settings = load_settings()  # reload in case it changed since app start
-        access_level = resolve_setup_access(entered, settings.setup_password)
+        try:
+            # Set only if the Setup password was changed in Setup (never the plain text).
+            password_hash = get_setup_password_hash(settings.local_db_file)
+        except Exception:  # noqa: BLE001 - an unreadable database must not lock Setup
+            password_hash = None
+        access_level = resolve_setup_access(entered, settings.setup_password, password_hash)
         if access_level is None:
             messagebox.showerror("Incorrect password", "That password is incorrect.")
             return
@@ -1794,11 +1941,12 @@ class BarBellApp(tk.Tk):
     # --- menu bar -------------------------------------------------------
 
     def _build_menu(self):
-        """Top menu bar: Home (Setup, Exit) and Help (Help, Contacts, About).
+        """Top menu bar: Home (Job Report, Setup, Back Up Now, Exit) and Help (Help, Contacts, About).
         About is reached only from here - the main form has no About button."""
         menubar = tk.Menu(self, tearoff=False)
 
         home_menu = tk.Menu(menubar, tearoff=False)
+        home_menu.add_command(label="Job Report...", command=self._show_job_report_screen)
         home_menu.add_command(label="Setup", command=self._prompt_setup_password)
         home_menu.add_command(label="Back Up Now", command=self._back_up_now)
         home_menu.add_command(label="Exit", command=self._confirm_exit)

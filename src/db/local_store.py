@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS labels (
     production_date TEXT,
     packing_slip_number TEXT
 );
+
+CREATE TABLE IF NOT EXISTS setup_credentials (
+    name TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # (column, DDL for ALTER TABLE ... ADD COLUMN) for labels columns added after
@@ -932,5 +938,160 @@ def void_pallet(pallet_sscc: str, db_path: Path | str) -> int:
         freed = cur.rowcount
         conn.commit()
         return freed
+    finally:
+        conn.close()
+
+
+# --- Setup password (hash only - see src/setup_access.py) -------------------
+
+SETUP_PASSWORD_NAME = "standard_setup_password"
+
+
+def get_setup_password_hash(db_path: Path | str) -> str | None:
+    """The stored hash of the changed standard setup password, or None if it
+    has never been changed (or was reset) - then the default applies."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM setup_credentials WHERE name = ?", (SETUP_PASSWORD_NAME,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_setup_password_hash(password_hash: str, db_path: Path | str) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO setup_credentials (name, password_hash, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET password_hash = excluded.password_hash, "
+            "updated_at = excluded.updated_at",
+            (SETUP_PASSWORD_NAME, password_hash, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_setup_password_hash(db_path: Path | str) -> None:
+    """Removes the changed password, so the default applies again."""
+    conn = _connect(db_path)
+    try:
+        conn.execute("DELETE FROM setup_credentials WHERE name = ?", (SETUP_PASSWORD_NAME,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Job Report: every pallet and carton logged for one job -----------------
+
+
+@dataclass
+class JobReportCarton:
+    sscc: str
+    description: str
+    production_date: str
+    quantity: int
+    batch: str
+    pallet_sscc: str | None
+
+
+@dataclass
+class JobReportPallet:
+    sscc: str
+    gtin: str | None
+    description: str
+    production_date: str
+    quantity: int  # total product on the pallet (AI 37)
+    batch: str
+    carton_count: int  # as recorded when the pallet was made
+    cartons: list[JobReportCarton]
+
+
+@dataclass
+class JobReport:
+    job_number: str
+    packing_slip_number: str | None
+    customer_name: str | None
+    item_number: str
+    description: str
+    batch: str
+    gtin: str | None
+    test_mode: bool
+    pallets: list[JobReportPallet]
+    unassociated_cartons: list[JobReportCarton]
+
+    @property
+    def carton_total(self) -> int:
+        return sum(len(p.cartons) for p in self.pallets) + len(self.unassociated_cartons)
+
+
+def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
+    """
+    Everything the Job Report prints for one job, read only from BarBell's own
+    SQLite data (no Label Traxx / ODBC). job_number must match exactly (only
+    leading/trailing spaces are ignored). Returns None if BarBell has no such
+    job.
+
+    Voided labels are left out: a pallet counts unless every one of its rows is
+    void, a carton likewise. A carton on no (live) pallet is listed in
+    unassociated_cartons. Print copies and reprints of one SSCC appear once.
+    """
+    job_number = job_number.strip()
+    conn = _connect(db_path)
+    try:
+        job = conn.execute(
+            "SELECT job_number, packing_slip_number, customer_name, item_number, item_description, "
+            "batch, gtin, test_mode, production_date FROM jobs WHERE job_number = ?",
+            (job_number,),
+        ).fetchone()
+        if job is None:
+            return None
+        (stored_job, slip, customer, item_number, item_description, batch, gtin, test_mode,
+         job_production_date) = job
+
+        def rows(label_type: str):
+            return conn.execute(
+                """
+                SELECT sscc, quantity, COALESCE(production_date, ?), pallet_sscc, carton_count
+                FROM labels
+                WHERE job_number = ? AND label_type = ?
+                GROUP BY sscc
+                HAVING SUM(status != 'void') > 0
+                ORDER BY MIN(id)
+                """,
+                (job_production_date, stored_job, label_type),
+            ).fetchall()
+
+        pallet_rows = rows(LABEL_TYPE_PALLET)
+        live_pallets = {r[0] for r in pallet_rows}
+
+        cartons_by_pallet: dict[str, list[JobReportCarton]] = {}
+        unassociated: list[JobReportCarton] = []
+        for sscc, quantity, production_date, pallet_sscc, _ in rows(LABEL_TYPE_CARTON):
+            carton = JobReportCarton(
+                sscc=sscc, description=item_description, production_date=production_date,
+                quantity=quantity, batch=batch, pallet_sscc=pallet_sscc,
+            )
+            if pallet_sscc and pallet_sscc in live_pallets:
+                cartons_by_pallet.setdefault(pallet_sscc, []).append(carton)
+            else:
+                unassociated.append(carton)
+
+        pallets = [
+            JobReportPallet(
+                sscc=sscc, gtin=gtin, description=item_description, production_date=production_date,
+                quantity=quantity, batch=batch,
+                carton_count=carton_count if carton_count is not None else len(cartons_by_pallet.get(sscc, [])),
+                cartons=cartons_by_pallet.get(sscc, []),
+            )
+            for sscc, quantity, production_date, _, carton_count in pallet_rows
+        ]
+        return JobReport(
+            job_number=stored_job, packing_slip_number=slip, customer_name=customer,
+            item_number=item_number, description=item_description, batch=batch, gtin=gtin,
+            test_mode=bool(test_mode), pallets=pallets, unassociated_cartons=unassociated,
+        )
     finally:
         conn.close()

@@ -3,6 +3,26 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.17 Beta - 2026-11-10
+
+- **Setup password can be changed from Setup.** A new "Setup Password" section has **New password** and
+  **Confirm password** boxes, each with an eye icon that shows/hides what is typed. At least 6 characters, typed
+  twice. It changes only the standard Setup password (still `change4GOOD` until someone changes it - nothing was
+  changed in this release); the Admin (Greg) password is fixed and untouched. The new password is saved only as a
+  salted PBKDF2 hash in the SQLite database (new `setup_credentials` table), never as plain text.
+- **Reset to Default** (same section) puts the original Setup password back. It needs the Admin password - asked
+  for on the spot, or just a confirmation if Setup was already opened with it.
+- Restoring an older database backup also restores that backup's Setup password.
+- **New Job Report screen.** Type a Job Number (exact match) and see every pallet - its SSCC barcode and number plus the
+  GS1-128 text (GTIN, description, production date, pallet quantity, batch, cartons on the pallet) - with its
+  cartons listed beneath (SSCC, description, production date, quantity per carton, batch). Cartons on no pallet
+  come last under "No Associated Pallet SSCC". An unknown job shows "Job is Not in BarBell". Voided pallets and
+  cartons are left out. Read entirely from BarBell's own SQLite data - no Label Traxx or ODBC. Shown on screen
+  and exported to a US Letter landscape PDF (`Job_report_<job>.pdf` in the output folder), in the Pallet Report's style.
+- The Job Report opens from **Home > Job Report...** and from a **Job Report** button next to Pallet Report (PDF)
+  on the Job/Label History form (pre-filled with the checked rows' job, or the Job No box).
+- Operator Guide updated with both features and screenshots (made from a dummy database).
+
 ## 1.1.16 Beta - 2026-11-06
 
 - Job/Label History: the list is now short by default. It shows the **last 90 days** of **real** labels;
