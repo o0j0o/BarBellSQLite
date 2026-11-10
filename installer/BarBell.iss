@@ -11,7 +11,7 @@
 ; NEVER the data (C:\BarBell\data) or the installer backups.
 ;
 ; Unattended installs (used by the installer's own checks):
-;   BarBell-Setup-1.2.0-Beta.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\BarBell" /LOG="install.log"
+;   BarBell-Setup-1.2.1-Beta.exe /VERYSILENT /SUPPRESSMSGBOXES /DIR="C:\BarBell" /LOG="install.log"
 ;       [/DATAMODE=keep|blank|restore-backup|restore-file]  [/DATASOURCE=<db file or backup folder>]
 ;       [/LTUSER=<user> /LTPASSWORD=<password> /LTDSN=<dsn>]
 
@@ -20,10 +20,10 @@
   #include "build_paths.inc"
 #endif
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 #ifndef AppVersionLabel
-  #define AppVersionLabel "1.2.0 Beta"
+  #define AppVersionLabel "1.2.1 Beta"
 #endif
 #ifndef AppDistDir
   #define AppDistDir "build\dist\BarBell"

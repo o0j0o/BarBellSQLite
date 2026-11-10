@@ -1,0 +1,412 @@
+"""
+1.1.17 Job Report: every pallet and carton logged for one job, from BarBell's own
+SQLite data only (no Label Traxx / ODBC), as a hierarchy - each pallet with its
+cartons, then the cartons on no pallet under "No Associated Pallet SSCC" - shown
+on screen and exportable to PDF.
+"""
+
+import datetime
+import sqlite3
+
+import pytest
+
+from src.db.local_store import (
+    create_pallet,
+    create_reprint_rows,
+    fetch_job_report,
+    record_generation_run,
+    void_pallet,
+)
+from src.job_report import NO_PALLET_HEADING, build_job_report_pdf, render_job_report_pages
+from src.labels import LabelRow
+
+GTIN = "00051096184921"
+
+
+def carton_rows(ssccs, job="122984", copies=1, quantity=10000):
+    return [
+        LabelRow(
+            job_number=job, packing_slip_number="100495", customer_number="J00005",
+            customer_name="J. Wray & Nephew Ltd.", product_no="47388", item_number="233458",
+            item_description="233458 - JWN White O/P Rum B 750Ml USA - PS", quantity=quantity,
+            batch="12298447388", production_date="260323", sscc=sscc, gtin=GTIN,
+            package_index=i, label_copy_index=copy,
+        )
+        for i, sscc in enumerate(ssccs, start=1)
+        for copy in range(1, copies + 1)
+    ]
+
+
+def sscc(n):
+    return f"0086001571120{n:05d}"
+
+
+def seed(db, cartons=6, on_pallet_a=2, on_pallet_b=2, job="122984", copies=1, test_mode=False):
+    ssccs = [sscc(i) for i in range(1, cartons + 1)]
+    record_generation_run(
+        carton_rows(ssccs, job=job, copies=copies), units_per_package=10000,
+        labels_per_package=copies, test_mode=test_mode, db_path=db,
+    )
+    pallets = {}
+    for name, count, pallet_sscc in (("A", on_pallet_a, "008600157112090001"), ("B", on_pallet_b, "008600157112090002")):
+        if count:
+            taken = [s for s in ssccs if all(s not in v for v in pallets.values())][:count]
+            create_pallet(
+                carton_ssccs=taken, job_number=job, quantity=10000 * len(taken),
+                production_date="260323", packing_slip_number="100495",
+                pallet_sscc=pallet_sscc, carton_count=len(taken), db_path=db,
+            )
+            pallets[pallet_sscc] = taken
+    return ssccs, pallets
+
+
+def test_an_unknown_job_is_none_and_matching_is_exact(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db)
+    assert fetch_job_report("999999", db) is None
+    assert fetch_job_report("12298", db) is None  # a prefix is not a match
+    assert fetch_job_report("122984 ", db).job_number == "122984"  # stray spaces only
+    # exact: another job number differing only by letter case is a different job
+    seed(db, job="abc-1", cartons=1, on_pallet_a=0, on_pallet_b=0)
+    assert fetch_job_report("ABC-1", db) is None
+    assert fetch_job_report("abc-1", db).job_number == "abc-1"
+
+
+def test_the_report_is_a_pallet_then_cartons_hierarchy(tmp_path):
+    db = tmp_path / "b.db"
+    ssccs, pallets = seed(db, cartons=6, on_pallet_a=3, on_pallet_b=2)
+    report = fetch_job_report("122984", db)
+
+    assert [p.sscc for p in report.pallets] == ["008600157112090001", "008600157112090002"]
+    first, second = report.pallets
+    assert [c.sscc for c in first.cartons] == pallets["008600157112090001"]
+    assert [c.sscc for c in second.cartons] == pallets["008600157112090002"]
+    assert (first.gtin, first.production_date, first.batch) == (GTIN, "260323", "12298447388")
+    assert first.description.startswith("233458 - JWN White")
+    assert (first.quantity, first.carton_count) == (30000, 3)
+    assert (second.quantity, second.carton_count) == (20000, 2)
+    c = first.cartons[0]
+    assert (c.quantity, c.batch, c.production_date) == (10000, "12298447388", "260323")
+
+    assert [c.sscc for c in report.unassociated_cartons] == [ssccs[5]]
+    assert report.carton_total == 6
+    assert report.test_mode is False
+
+
+def test_print_copies_count_a_carton_once(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db, cartons=2, on_pallet_a=1, on_pallet_b=0, copies=2)
+    report = fetch_job_report("122984", db)
+    assert report.carton_total == 2
+    assert len(report.pallets[0].cartons) == 1 and len(report.unassociated_cartons) == 1
+
+
+def test_a_voided_pallet_frees_its_cartons_into_the_unassociated_list(tmp_path):
+    db = tmp_path / "b.db"
+    ssccs, pallets = seed(db, cartons=4, on_pallet_a=2, on_pallet_b=2)
+    void_pallet("008600157112090001", db)
+    report = fetch_job_report("122984", db)
+    assert [p.sscc for p in report.pallets] == ["008600157112090002"]
+    assert {c.sscc for c in report.unassociated_cartons} == set(pallets["008600157112090001"])
+
+
+def test_a_voided_carton_is_left_out(tmp_path):
+    db = tmp_path / "b.db"
+    ssccs, _ = seed(db, cartons=3, on_pallet_a=0, on_pallet_b=0)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE labels SET status = 'void' WHERE sscc = ?", (ssccs[0],))
+    report = fetch_job_report("122984", db)
+    assert [c.sscc for c in report.unassociated_cartons] == ssccs[1:]
+
+
+def test_the_report_needs_only_the_sqlite_file(tmp_path, monkeypatch):
+    """No Label Traxx / ODBC: building the report must not touch either."""
+    import src.db.readonly_connection as ro
+
+    def boom(*a, **k):
+        raise AssertionError("Job Report must not use Label Traxx / ODBC")
+
+    monkeypatch.setattr(ro.ReadOnlyConnection, "__init__", boom)
+    db = tmp_path / "b.db"
+    seed(db)
+    report = fetch_job_report("122984", db)
+    pages = render_job_report_pages(report, company_name="Caribbean Label Crafts Ltd.")
+    assert pages
+
+
+def test_pages_are_us_letter_landscape_and_one_job_can_run_to_many_pages(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db, cartons=60, on_pallet_a=20, on_pallet_b=20)
+    report = fetch_job_report("122984", db)
+    pages = render_job_report_pages(report, printed_at=datetime.datetime(2026, 11, 10, 9, 0))
+    assert len(pages) >= 3
+    assert all(p.mode == "1" for p in pages)
+    assert all(p.width > p.height for p in pages)
+    assert round(pages[0].width / 300, 2) == 11.0 and round(pages[0].height / 300, 2) == 8.5
+
+
+def test_an_empty_job_and_a_test_pallet_still_render(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db, cartons=1, on_pallet_a=0, on_pallet_b=0)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM labels")
+    report = fetch_job_report("122984", db)
+    assert report is not None and report.carton_total == 0
+    assert render_job_report_pages(report)
+
+    # a TEST-SSCC placeholder pallet (not digits) can't be a barcode but must not crash
+    seed(db, cartons=2, on_pallet_a=1, on_pallet_b=0, job="TESTJOB", test_mode=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE labels SET sscc = 'TEST-SSCC-00001' WHERE label_type = 'PALLET' AND job_number = 'TESTJOB'")
+    report = fetch_job_report("TESTJOB", db)
+    assert report.test_mode is True
+    assert render_job_report_pages(report)
+
+
+def test_the_pdf_is_written(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db)
+    out = build_job_report_pdf(fetch_job_report("122984", db), tmp_path / "sub" / "Job_report_122984.pdf")
+    assert out.exists() and out.read_bytes().startswith(b"%PDF")
+
+
+# --- the screen ------------------------------------------------------------------------------
+
+
+def _buttons(widget):
+    result = []
+    for child in widget.winfo_children():
+        if child.winfo_class() in ("TButton", "Button"):
+            result.append(child)
+        result.extend(_buttons(child))
+    return result
+
+
+def _find_treeview(widget):
+    for child in widget.winfo_children():
+        if child.winfo_class() == "Treeview":
+            return child
+        found = _find_treeview(child)
+        if found is not None:
+            return found
+    return None
+
+
+@pytest.fixture
+def local_db(app, tmp_path, monkeypatch):
+    db = tmp_path / "barbell.db"
+    monkeypatch.setattr(app.settings, "local_db_file", str(db))
+    monkeypatch.setattr(app.settings, "demo_mode", False)
+    monkeypatch.setattr(app.settings, "output_dir", str(tmp_path / "out"))
+    return db
+
+
+def test_the_screen_says_job_is_not_in_barbell_for_a_missing_job(app, local_db):
+    win = app._show_job_report_screen()
+    try:
+        win.job_var.set("NO-SUCH-JOB")
+        win.run_report()
+        assert win.message_label.cget("text") == "Job is Not in BarBell"
+        assert str(win.export_button.cget("state")) == "disabled"
+    finally:
+        win.destroy()
+
+
+def test_the_screen_shows_a_job_and_exports_a_pdf(app, local_db, monkeypatch, tmp_path):
+    seed(local_db)
+    opened = []
+    monkeypatch.setattr(type(app), "_open_file", staticmethod(lambda path: opened.append(path)))
+    win = app._show_job_report_screen()
+    try:
+        win.job_var.set("122984")
+        win.run_report()
+        assert "2 pallet(s)" in win.message_label.cget("text")
+        assert "6 carton(s)" in win.message_label.cget("text")
+        assert win.page_photos  # pages are on screen
+        assert str(win.export_button.cget("state")) == "normal"
+
+        win.export_pdf()
+        assert len(opened) == 1 and opened[0].name == "Job_report_122984.pdf"
+        assert opened[0].read_bytes().startswith(b"%PDF")
+
+        win.job_var.set("   ")
+        win.run_report()
+        assert win.page_photos == [] and str(win.export_button.cget("state")) == "disabled"
+    finally:
+        win.destroy()
+
+
+def test_the_screen_can_be_opened_with_a_job_already_filled_in(app, local_db):
+    seed(local_db)
+    win = app._show_job_report_screen(job_number="122984")
+    try:
+        assert win.report is not None and win.report.job_number == "122984"
+    finally:
+        win.destroy()
+
+
+def test_job_report_is_in_the_home_menu_and_beside_pallet_report_in_history(app, local_db):
+    home = app.nametowidget(app._menubar.entrycget(0, "menu"))
+    labels = [home.entrycget(i, "label") for i in range(home.index("end") + 1)]
+    assert "Job Report..." in labels
+
+    seed(local_db)
+    before = set(app.winfo_children())
+    app._show_history()
+    history = [w for w in app.winfo_children() if w not in before and w.winfo_class() == "Toplevel"][0]
+    try:
+        texts = [b.cget("text") for b in _buttons(history)]
+        assert "Job Report" in texts
+        assert texts.index("Job Report") == texts.index("Pallet Report (PDF)") + 1
+    finally:
+        history.destroy()
+
+
+def test_no_pallet_heading_text():
+    assert NO_PALLET_HEADING == "No Associated Pallet SSCC"
+
+
+def test_repeated_test_runs_that_reuse_the_same_test_sscc_are_all_listed(tmp_path):
+    """Regression: job 117458 had 11 test cartons from 3 runs, but the report showed 5,
+    because Test-mode SSCCs restart at TEST-SSCC-00001 on every run and the report grouped
+    by SSCC. Every label row of the job must appear."""
+    db = tmp_path / "b.db"
+    for run_size in (5, 4, 2):
+        ssccs = [f"TEST-SSCC-{i:05d}" for i in range(1, run_size + 1)]
+        record_generation_run(
+            carton_rows(ssccs, job="117458"), units_per_package=10000,
+            labels_per_package=1, test_mode=True, db_path=db,
+        )
+    report = fetch_job_report("117458", db)
+    assert report.carton_total == 11
+    assert len(report.unassociated_cartons) == 11
+    assert [c.sscc for c in report.unassociated_cartons].count("TEST-SSCC-00001") == 3
+
+
+def test_reprints_and_extra_print_copies_are_not_extra_cartons(tmp_path):
+    db = tmp_path / "b.db"
+    seed(db, cartons=3, on_pallet_a=0, on_pallet_b=0, copies=2)
+    with sqlite3.connect(db) as conn:
+        ids = [r[0] for r in conn.execute("SELECT id FROM labels ORDER BY id")]
+    create_reprint_rows(ids, db)  # reprint every label (both copies of all 3 cartons)
+    report = fetch_job_report("122984", db)
+    assert report.carton_total == 3
+
+
+# --- mixed products in one job (1.1.17) --------------------------------------------------------
+
+
+def _run(db, job, ssccs, *, description, gtin, batch, item="233458", quantity=10000):
+    rows = [
+        LabelRow(
+            job_number=job, packing_slip_number="100495", customer_number="J00005",
+            customer_name="J. Wray & Nephew Ltd.", product_no=batch[-5:], item_number=item,
+            item_description=description, quantity=quantity, batch=batch, production_date="260505",
+            sscc=s, gtin=gtin, package_index=i, label_copy_index=1,
+        )
+        for i, s in enumerate(ssccs, start=1)
+    ]
+    record_generation_run(rows, units_per_package=quantity, labels_per_package=1, test_mode=False, db_path=db)
+
+
+def test_each_carton_reports_its_own_product_when_a_job_has_several(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coconut Rum Cream", gtin="00000000000011", batch="11745837609")
+    _run(db, "117458", [sscc(3)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    _run(db, "117458", [sscc(4)], description="Rum Cream", gtin="00000000000035", batch="11745837611")
+
+    report = fetch_job_report("117458", db)
+    got = [(c.sscc, c.description, c.gtin, c.batch) for c in report.unassociated_cartons]
+    assert got == [
+        (sscc(1), "Coconut Rum Cream", "00000000000011", "11745837609"),
+        (sscc(2), "Coconut Rum Cream", "00000000000011", "11745837609"),
+        (sscc(3), "Coffee Rum Cream", "00000000000028", "11745837610"),
+        (sscc(4), "Rum Cream", "00000000000035", "11745837611"),
+    ]
+
+
+def test_a_pallet_takes_its_product_from_its_cartons_not_the_jobs_latest_run(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coconut Rum Cream", gtin="00000000000011", batch="11745837609")
+    create_pallet(
+        carton_ssccs=[sscc(1), sscc(2)], job_number="117458", quantity=20000, production_date="260505",
+        packing_slip_number="100495", pallet_sscc="008600157112090001", carton_count=2, db_path=db,
+    )
+    _run(db, "117458", [sscc(3)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+
+    report = fetch_job_report("117458", db)
+    pallet = report.pallets[0]
+    assert (pallet.description, pallet.gtin, pallet.batch) == ("Coconut Rum Cream", "00000000000011", "11745837609")
+    assert [c.description for c in report.unassociated_cartons] == ["Coffee Rum Cream"]
+
+
+def test_labels_logged_before_the_snapshot_existed_fall_back_to_the_job_row(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE labels SET item_description = NULL, gtin = NULL, batch = NULL, item_number = NULL")
+    c = fetch_job_report("117458", db).unassociated_cartons[0]
+    assert (c.description, c.gtin, c.batch) == ("Coffee Rum Cream", "00000000000028", "11745837610")
+
+
+def test_reprints_carry_the_snapshot_and_an_old_database_is_upgraded(tmp_path):
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1)], description="Coffee Rum Cream", gtin="00000000000028", batch="11745837610")
+    with sqlite3.connect(db) as conn:
+        original = conn.execute("SELECT id FROM labels").fetchone()[0]
+    create_reprint_rows([original], db)
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute("SELECT status, item_description, gtin, batch FROM labels ORDER BY id").fetchall()
+    assert rows[1] == ("reprint", "Coffee Rum Cream", "00000000000028", "11745837610")
+
+    # a database from before the new columns: rebuild labels without them, then open it again
+    old = tmp_path / "old.db"
+    with sqlite3.connect(db) as src, sqlite3.connect(old) as dst:
+        src.backup(dst)
+    with sqlite3.connect(old) as conn:
+        for col in ("item_number", "item_description", "gtin", "batch", "product_no"):
+            conn.execute(f"ALTER TABLE labels DROP COLUMN {col}")
+    report = fetch_job_report("117458", old)  # opening migrates it
+    assert report.unassociated_cartons[0].description == "Coffee Rum Cream"  # from the job row
+    with sqlite3.connect(old) as conn:
+        assert "gtin" in {r[1] for r in conn.execute("PRAGMA table_info(labels)")}
+
+
+def test_the_table_has_the_requested_columns_and_the_header_has_no_gtin():
+    import inspect
+
+    import src.job_report as jr
+
+    assert jr.BATCH_HEADING == "Batch (Job No. - P/N)"
+    src_text = inspect.getsource(jr)
+    assert '("GTIN:", report.gtin' not in src_text  # the page header no longer carries a GTIN
+    order = [jr.COL_NUM, jr.COL_SSCC, jr.COL_DESC, jr.COL_GTIN, jr.COL_DATE_CENTER, jr.COL_QTY_RIGHT, jr.COL_BATCH]
+    assert order == sorted(order)
+
+
+# --- a small header per product ---------------------------------------------------------------
+
+
+def test_cartons_are_grouped_by_product_in_first_seen_order(tmp_path):
+    from src.job_report import group_cartons_by_product
+
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coffee Rum Cream", gtin="1", batch="B1")
+    _run(db, "117458", [sscc(3)], description="Rum Cream", gtin="2", batch="B2")
+    _run(db, "117458", [sscc(4)], description="Coffee Rum Cream", gtin="1", batch="B1")  # same product again
+
+    groups = group_cartons_by_product(fetch_job_report("117458", db).unassociated_cartons)
+    assert [(g[0].description, len(g)) for g in groups] == [("Coffee Rum Cream", 3), ("Rum Cream", 1)]
+    assert group_cartons_by_product([]) == []
+
+
+def test_a_long_mixed_product_job_paginates_with_product_headers(tmp_path):
+    db = tmp_path / "b.db"
+    n = 0
+    for product in range(4):
+        ssccs = [sscc(n + i) for i in range(1, 31)]
+        n += 30
+        _run(db, "117458", ssccs, description=f"22560{product} - Product number {product}", gtin=f"0000000000001{product}", batch=f"1174583760{product}")
+    report = fetch_job_report("117458", db)
+    pages = render_job_report_pages(report, company_name="Caribbean Label Crafts Ltd.")
+    assert report.carton_total == 120 and len(pages) >= 3

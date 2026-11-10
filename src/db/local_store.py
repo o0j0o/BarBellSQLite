@@ -64,7 +64,7 @@ import getpass
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.dates import normalize_production_date
@@ -121,7 +121,18 @@ CREATE TABLE IF NOT EXISTS labels (
     pallet_sscc TEXT,
     carton_count INTEGER,
     production_date TEXT,
-    packing_slip_number TEXT
+    packing_slip_number TEXT,
+    item_number TEXT,
+    item_description TEXT,
+    gtin TEXT,
+    batch TEXT,
+    product_no TEXT
+);
+
+CREATE TABLE IF NOT EXISTS setup_credentials (
+    name TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 """
 
@@ -135,6 +146,14 @@ _LABELS_MIGRATION_COLUMNS = [
     ("carton_count", "INTEGER"),
     ("production_date", "TEXT"),
     ("packing_slip_number", "TEXT"),
+    # Product snapshot per label (1.1.17): the jobs row only keeps the LATEST run of a job number, so a
+    # job run for several products could not say which product a given carton was. Labels from before
+    # this column existed stay NULL (not guessed) and readers fall back to the jobs row.
+    ("item_number", "TEXT"),
+    ("item_description", "TEXT"),
+    ("gtin", "TEXT"),
+    ("batch", "TEXT"),
+    ("product_no", "TEXT"),
 ]
 
 _JOIN_SELECT = """
@@ -381,12 +400,14 @@ def record_generation_run(
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index,
                     quantity, status, superseded_id, created_at,
-                    production_date, packing_slip_number
-                ) VALUES (?, ?, ?, ?, ?, 'original', NULL, ?, ?, ?)
+                    production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, ?, ?, ?, 'original', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     r.job_number, r.sscc, r.package_index, r.label_copy_index, r.quantity, now,
                     normalize_production_date(r.production_date), r.packing_slip_number,
+                    r.item_number, r.item_description, r.gtin, r.batch, r.product_no,
                 ),
             )
             label_ids.append(cur.lastrowid)
@@ -401,11 +422,52 @@ def record_generation_run(
         conn.close()
 
 
+def _history_filters(
+    job_number: str | None,
+    date: str | None,
+    sscc_contains: str | None,
+    since_days: int | None,
+    hide_test: bool,
+    now: datetime | None = None,
+) -> tuple[list[str], list]:
+    """The WHERE clauses (and their values) shared by fetch_label_history() and
+    count_label_history(), so what the list shows and what the 'N hidden' line
+    counts can never disagree."""
+    clauses: list[str] = []
+    params: list = []
+    if job_number:
+        clauses.append("j.job_number = ?")
+        params.append(job_number)
+    if date:
+        try:
+            date = normalize_production_date(date)  # accepts YYMMDD (or the old YYYY-MM-DD)
+        except ValueError:
+            pass  # not a valid date - match it as typed (finds nothing)
+        clauses.append("j.production_date = ?")
+        params.append(date)
+    if sscc_contains:
+        # Escape LIKE wildcards so what the user types is matched literally.
+        escaped = sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("(l.sscc LIKE ? ESCAPE '\\' OR l.pallet_sscc LIKE ? ESCAPE '\\')")
+        params.append(f"%{escaped}%")
+        params.append(f"%{escaped}%")
+    if since_days is not None:
+        # created_at is stored as a UTC ISO-8601 string, which sorts the same as time does
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=since_days)
+        clauses.append("l.created_at >= ?")
+        params.append(cutoff.astimezone(timezone.utc).isoformat(timespec="microseconds"))
+    if hide_test:
+        clauses.append("j.test_mode = 0")
+    return clauses, params
+
+
 def fetch_label_history(
     db_path: Path | str,
     job_number: str | None = None,
     date: str | None = None,
     sscc_contains: str | None = None,
+    since_days: int | None = None,
+    hide_test: bool = False,
 ) -> list[FlatLabelRow]:
     """For the GUI history viewer - every logged label, optionally filtered
     to an exact job number and/or production date, and/or to SSCCs containing
@@ -415,35 +477,42 @@ def fetch_label_history(
     rows' pallet_sscc - so searching a pallet's SSCC brings back the pallet
     row and every carton scanned onto it. SQLite's LIKE is case-insensitive
     for ASCII, covering SSCCs with letters (e.g. TEST-SSCC-#####). Most
-    recent first."""
+    recent first.
+
+    since_days limits the list to labels logged in the last N days, and
+    hide_test drops test-mode labels. Both only change what is LISTED - nothing
+    is ever deleted - and the history viewer turns both off whenever the user
+    is searching, so an old or test label can always be found."""
     conn = _connect(db_path)
     try:
         query = _JOIN_SELECT
-        clauses = []
-        params = []
-        if job_number:
-            clauses.append("j.job_number = ?")
-            params.append(job_number)
-        if date:
-            try:
-                date = normalize_production_date(date)  # accepts YYMMDD (or the old YYYY-MM-DD)
-            except ValueError:
-                pass  # not a valid date - match it as typed (finds nothing)
-            clauses.append("j.production_date = ?")
-            params.append(date)
-        if sscc_contains:
-            # Escape LIKE wildcards so what the user types is matched literally.
-            escaped = (
-                sscc_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            )
-            clauses.append("(l.sscc LIKE ? ESCAPE '\\' OR l.pallet_sscc LIKE ? ESCAPE '\\')")
-            params.append(f"%{escaped}%")
-            params.append(f"%{escaped}%")
+        clauses, params = _history_filters(job_number, date, sscc_contains, since_days, hide_test)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY l.id DESC"
         cur = conn.execute(query, params)
         return [_row_to_flat(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def count_label_history(
+    db_path: Path | str,
+    job_number: str | None = None,
+    date: str | None = None,
+    sscc_contains: str | None = None,
+    since_days: int | None = None,
+    hide_test: bool = False,
+) -> int:
+    """How many rows fetch_label_history() would return for the same filters
+    (used for the 'N hidden' line in the history viewer)."""
+    conn = _connect(db_path)
+    try:
+        clauses, params = _history_filters(job_number, date, sscc_contains, since_days, hide_test)
+        query = "SELECT COUNT(*) FROM labels l JOIN jobs j ON j.job_number = l.job_number"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        return conn.execute(query, params).fetchone()[0]
     finally:
         conn.close()
 
@@ -494,7 +563,8 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
         for original_id in label_ids:
             cur = conn.execute(
                 "SELECT job_number, sscc, carton_sequence, label_copy_index, quantity, "
-                "label_type, pallet_sscc, carton_count, production_date, packing_slip_number "
+                "label_type, pallet_sscc, carton_count, production_date, packing_slip_number, "
+                "item_number, item_description, gtin, batch, product_no "
                 "FROM labels WHERE id = ?",
                 (original_id,),
             )
@@ -504,6 +574,7 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
             (
                 job_number, sscc, carton_sequence, label_copy_index, quantity,
                 label_type, pallet_sscc, carton_count, production_date, packing_slip_number,
+                item_number, item_description, gtin, batch, product_no,
             ) = original
 
             cur = conn.execute(
@@ -511,12 +582,14 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index,
                     quantity, status, superseded_id, created_at, label_type,
-                    pallet_sscc, carton_count, production_date, packing_slip_number
-                ) VALUES (?, ?, ?, ?, ?, 'reprint', ?, ?, ?, ?, ?, ?, ?)
+                    pallet_sscc, carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, ?, ?, ?, 'reprint', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_number, sscc, carton_sequence, label_copy_index, quantity, original_id, now,
                     label_type, pallet_sscc, carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no,
                 ),
             )
             new_ids.append(cur.lastrowid)
@@ -740,6 +813,21 @@ def create_pallet(
         if job_row is None:
             raise ValueError(f"No jobs row found for job_number {job_number!r}")
 
+        # The pallet is mono-product (the Pallet screen enforces it), so its product is that of
+        # its cartons - not the jobs row, which only knows the job's latest run.
+        carton_product = conn.execute(
+            """
+            SELECT COALESCE(l.item_number, j.item_number), COALESCE(l.item_description, j.item_description),
+                   COALESCE(l.gtin, j.gtin), COALESCE(l.batch, j.batch), COALESCE(l.product_no, j.product_no)
+            FROM labels l JOIN jobs j ON j.job_number = l.job_number
+            WHERE l.sscc = ? AND l.label_type = 'CARTON' AND l.job_number = ?
+            ORDER BY l.id DESC LIMIT 1
+            """,
+            (carton_ssccs[0], job_number),
+        ).fetchone()
+        if carton_product is None:
+            carton_product = (None, None, None, None, None)
+
         new_ids = []
         for copy_index in (1, 2):
             cur = conn.execute(
@@ -747,11 +835,12 @@ def create_pallet(
                 INSERT INTO labels (
                     job_number, sscc, carton_sequence, label_copy_index, quantity,
                     status, superseded_id, created_at, label_type, pallet_sscc,
-                    carton_count, production_date, packing_slip_number
-                ) VALUES (?, ?, 1, ?, ?, 'original', NULL, ?, 'PALLET', NULL, ?, ?, ?)
+                    carton_count, production_date, packing_slip_number,
+                    item_number, item_description, gtin, batch, product_no
+                ) VALUES (?, ?, 1, ?, ?, 'original', NULL, ?, 'PALLET', NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (job_number, pallet_sscc, copy_index, quantity, now, carton_count,
-                 production_date, packing_slip_number),
+                 production_date, packing_slip_number, *carton_product),
             )
             new_ids.append(cur.lastrowid)
 
@@ -884,5 +973,170 @@ def void_pallet(pallet_sscc: str, db_path: Path | str) -> int:
         freed = cur.rowcount
         conn.commit()
         return freed
+    finally:
+        conn.close()
+
+
+# --- Setup password (hash only - see src/setup_access.py) -------------------
+
+SETUP_PASSWORD_NAME = "standard_setup_password"
+
+
+def get_setup_password_hash(db_path: Path | str) -> str | None:
+    """The stored hash of the changed standard setup password, or None if it
+    has never been changed (or was reset) - then the default applies."""
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM setup_credentials WHERE name = ?", (SETUP_PASSWORD_NAME,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_setup_password_hash(password_hash: str, db_path: Path | str) -> None:
+    conn = _connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO setup_credentials (name, password_hash, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET password_hash = excluded.password_hash, "
+            "updated_at = excluded.updated_at",
+            (SETUP_PASSWORD_NAME, password_hash, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_setup_password_hash(db_path: Path | str) -> None:
+    """Removes the changed password, so the default applies again."""
+    conn = _connect(db_path)
+    try:
+        conn.execute("DELETE FROM setup_credentials WHERE name = ?", (SETUP_PASSWORD_NAME,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Job Report: every pallet and carton logged for one job -----------------
+
+
+@dataclass
+class JobReportCarton:
+    sscc: str
+    description: str
+    production_date: str
+    quantity: int
+    batch: str
+    pallet_sscc: str | None
+    gtin: str | None = None
+
+
+@dataclass
+class JobReportPallet:
+    sscc: str
+    gtin: str | None
+    description: str
+    production_date: str
+    quantity: int  # total product on the pallet (AI 37)
+    batch: str
+    carton_count: int  # as recorded when the pallet was made
+    cartons: list[JobReportCarton]
+
+
+@dataclass
+class JobReport:
+    job_number: str
+    packing_slip_number: str | None
+    customer_name: str | None
+    item_number: str
+    description: str
+    batch: str
+    gtin: str | None
+    test_mode: bool
+    pallets: list[JobReportPallet]
+    unassociated_cartons: list[JobReportCarton]
+
+    @property
+    def carton_total(self) -> int:
+        return sum(len(p.cartons) for p in self.pallets) + len(self.unassociated_cartons)
+
+
+def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
+    """
+    Everything the Job Report prints for one job, read only from BarBell's own
+    SQLite data (no Label Traxx / ODBC). job_number must match exactly (only
+    leading/trailing spaces are ignored). Returns None if BarBell has no such
+    job.
+
+    Each carton and pallet reports its OWN product (description, GTIN, batch) as saved on its
+    label, so a job with several products lists each correctly. Labels logged before 1.1.17
+    did not save that and fall back to the job's latest run.
+
+    One entry per label printed in a run: the extra print copies (copy 2, 3...)
+    and reprint rows are not separate cartons, and voided labels are left out.
+    It is deliberately NOT grouped by SSCC: Test-mode SSCCs (TEST-SSCC-00001...)
+    start again at 1 on every run, so the same job can hold several cartons that
+    share a test SSCC - all of them are listed. (Real SSCCs are never reused.)
+    A carton on no (live) pallet is listed in unassociated_cartons.
+    """
+    job_number = job_number.strip()
+    conn = _connect(db_path)
+    try:
+        job = conn.execute(
+            "SELECT job_number, packing_slip_number, customer_name, item_number, item_description, "
+            "batch, gtin, test_mode, production_date FROM jobs WHERE job_number = ?",
+            (job_number,),
+        ).fetchone()
+        if job is None:
+            return None
+        (stored_job, slip, customer, item_number, item_description, batch, gtin, test_mode,
+         job_production_date) = job
+
+        def rows(label_type: str):
+            return conn.execute(
+                """
+                SELECT sscc, quantity, COALESCE(production_date, ?), pallet_sscc, carton_count,
+                       COALESCE(item_description, ?), COALESCE(gtin, ?), COALESCE(batch, ?)
+                FROM labels
+                WHERE job_number = ? AND label_type = ?
+                  AND label_copy_index = 1 AND status NOT IN ('void', 'reprint')
+                ORDER BY id
+                """,
+                (job_production_date, item_description, gtin, batch, stored_job, label_type),
+            ).fetchall()
+
+        pallet_rows = rows(LABEL_TYPE_PALLET)
+        live_pallets = {r[0] for r in pallet_rows}
+
+        cartons_by_pallet: dict[str, list[JobReportCarton]] = {}
+        unassociated: list[JobReportCarton] = []
+        for sscc, quantity, production_date, pallet_sscc, _, c_description, c_gtin, c_batch in rows(
+            LABEL_TYPE_CARTON
+        ):
+            carton = JobReportCarton(
+                sscc=sscc, description=c_description, production_date=production_date,
+                quantity=quantity, batch=c_batch, pallet_sscc=pallet_sscc, gtin=c_gtin,
+            )
+            if pallet_sscc and pallet_sscc in live_pallets:
+                cartons_by_pallet.setdefault(pallet_sscc, []).append(carton)
+            else:
+                unassociated.append(carton)
+
+        pallets = [
+            JobReportPallet(
+                sscc=sscc, gtin=p_gtin, description=p_description, production_date=production_date,
+                quantity=quantity, batch=p_batch,
+                carton_count=carton_count if carton_count is not None else len(cartons_by_pallet.get(sscc, [])),
+                cartons=cartons_by_pallet.get(sscc, []),
+            )
+            for sscc, quantity, production_date, _, carton_count, p_description, p_gtin, p_batch in pallet_rows
+        ]
+        return JobReport(
+            job_number=stored_job, packing_slip_number=slip, customer_name=customer,
+            item_number=item_number, description=item_description, batch=batch, gtin=gtin,
+            test_mode=bool(test_mode), pallets=pallets, unassociated_cartons=unassociated,
+        )
     finally:
         conn.close()

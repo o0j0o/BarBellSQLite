@@ -1074,7 +1074,7 @@ class TestMenuBar:
         assert _menu_labels(app._menubar) == ["Home", "Help"]
 
     def test_home_menu_holds_setup_back_up_now_and_exit(self, app):
-        assert _menu_labels(_home_menu(app)) == ["Setup", "Back Up Now", "Exit"]
+        assert _menu_labels(_home_menu(app)) == ["Job Report...", "Setup", "Back Up Now", "Exit"]
 
     def test_help_menu_has_help_contacts_about(self, app):
         assert _menu_labels(_help_menu(app)) == ["Help", "Contacts", "About"]
