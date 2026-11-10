@@ -42,6 +42,15 @@ from src.version import version_string
 NO_PALLET_HEADING = "No Associated Pallet SSCC"
 
 
+def group_cartons_by_product(cartons: list[JobReportCarton]) -> list[list[JobReportCarton]]:
+    """The cartons split into one list per product (same description, GTIN and batch), in the
+    order each product first appears. Cartons from several products can share a job."""
+    groups: dict[tuple, list[JobReportCarton]] = {}
+    for carton in cartons:
+        groups.setdefault((carton.description, carton.gtin, carton.batch), []).append(carton)
+    return list(groups.values())
+
+
 def _fit_bold(draw, text: str, max_px: int, start_pt: float, min_pt: float):
     """The largest bold font up to start_pt in which text fits max_px."""
     pt = start_pt
@@ -58,6 +67,8 @@ TABLE_HEAD_H_MM = 6.5
 ROW_H_MM = 5.8
 SECTION_GAP_MM = 5.0
 HEADING_H_MM = 9.0
+GROUP_HEAD_H_MM = 7.2
+GROUP_GAP_MM = 3.0
 
 # Carton table columns: # | Carton SSCC | Description | GTIN | Production Date | Qty per Carton | Batch.
 # GTIN is a column (not just in the page header) because one job can hold several products.
@@ -181,16 +192,55 @@ class _Layout:
         self.y += ROW_H_MM
         draw.line([(self.left, _px(self.y) - 1), (self.right, _px(self.y) - 1)], fill=0, width=1)
 
-    def cartons(self, cartons: list[JobReportCarton], continued_label: str | None):
-        """The carton table, repeating its column header (and what it belongs
-        to) when it runs onto a new page."""
-        self.table_header()
-        # one description size for the whole table (the smallest any row needs), so rows look alike
+    def _set_description_font(self, cartons: list[JobReportCarton]):
+        """One description size for a whole table (the smallest any row needs), so rows look alike."""
         room = _px(COL_GTIN - COL_DESC - 2)
         self.desc_font = min(
             (_fit_font(self.draw, c.description, room, 9.5, 6.0) for c in cartons),
             key=lambda f: f.size, default=_font(9.5),
         )
+
+    def group_header(self, group: list[JobReportCarton], continued: bool = False):
+        """A small heading for one product: its description, GTIN and batch on the left, the
+        number of cartons and their total quantity on the right."""
+        draw, first = self.draw, group[0]
+        top = _px(self.y + 1.2)
+        right_text = f"{len(group):,} carton(s)   Qty {sum(c.quantity for c in group):,}"
+        right_font = _font(10, bold=True)
+        draw.text((self.right - _text_width(draw, right_text, right_font), top), right_text, font=right_font, fill=0)
+        left_text = f"{first.description}   GTIN {first.gtin or '-'}   Batch {first.batch}"
+        if continued:
+            left_text += "  (continued)"
+        room = self.right - _px(COL_NUM) - _text_width(draw, right_text, right_font) - _px(8)
+        draw.text((_px(COL_NUM), top), left_text, font=_fit_bold(draw, left_text, room, 10.5, 7.0), fill=0)
+        self.y += GROUP_HEAD_H_MM
+        draw.line([(self.left, _px(self.y) - 3), (self.right, _px(self.y) - 3)], fill=0, width=3)
+
+    def product_groups(self, cartons: list[JobReportCarton]):
+        """The carton table split by product, each with its small header (cartons are numbered
+        from 1 within a product). Column headings print once, and again after a page break."""
+        self.table_header()
+        self._set_description_font(cartons)
+        for position, group in enumerate(group_cartons_by_product(cartons)):
+            gap = GROUP_GAP_MM if position else 0.0  # air between one product's rows and the next header
+            if self.y + gap + GROUP_HEAD_H_MM + 2 * ROW_H_MM > _BOTTOM_MM:
+                self.new_page()
+                self.table_header()
+                gap = 0.0
+            self.y += gap
+            self.group_header(group)
+            for index, carton in enumerate(group, start=1):
+                if self.y + ROW_H_MM > _BOTTOM_MM:
+                    self.new_page()
+                    self.table_header()
+                    self.group_header(group, continued=True)
+                self.carton_row(index, carton)
+
+    def cartons(self, cartons: list[JobReportCarton], continued_label: str | None):
+        """The carton table, repeating its column header (and what it belongs
+        to) when it runs onto a new page."""
+        self.table_header()
+        self._set_description_font(cartons)
         for index, carton in enumerate(cartons, start=1):
             if self.y + ROW_H_MM > _BOTTOM_MM:
                 self.new_page()
@@ -271,14 +321,14 @@ class _Layout:
         self.y += SECTION_GAP_MM
 
     def no_pallet_section(self):
-        self.ensure(HEADING_H_MM + TABLE_HEAD_H_MM + 2 * ROW_H_MM)
+        self.ensure(HEADING_H_MM + TABLE_HEAD_H_MM + GROUP_HEAD_H_MM + 2 * ROW_H_MM)
         draw = self.draw
         draw.line([(self.left, _px(self.y)), (self.right, _px(self.y))], fill=0, width=5)
         draw.text((self.left, _px(self.y + 2.0)), NO_PALLET_HEADING, font=_font(13, bold=True), fill=0)
         self.y += HEADING_H_MM
         cartons = self.report.unassociated_cartons
         if cartons:
-            self.cartons(cartons, NO_PALLET_HEADING)
+            self.product_groups(cartons)
         else:
             draw.text((_px(COL_SSCC), _px(self.y + 0.5)), "None - every carton is on a pallet.", font=_font(9.5), fill=0)
             self.y += ROW_H_MM

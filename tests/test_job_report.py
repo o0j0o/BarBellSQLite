@@ -382,3 +382,31 @@ def test_the_table_has_the_requested_columns_and_the_header_has_no_gtin():
     assert '("GTIN:", report.gtin' not in src_text  # the page header no longer carries a GTIN
     order = [jr.COL_NUM, jr.COL_SSCC, jr.COL_DESC, jr.COL_GTIN, jr.COL_DATE_CENTER, jr.COL_QTY_RIGHT, jr.COL_BATCH]
     assert order == sorted(order)
+
+
+# --- a small header per product ---------------------------------------------------------------
+
+
+def test_cartons_are_grouped_by_product_in_first_seen_order(tmp_path):
+    from src.job_report import group_cartons_by_product
+
+    db = tmp_path / "b.db"
+    _run(db, "117458", [sscc(1), sscc(2)], description="Coffee Rum Cream", gtin="1", batch="B1")
+    _run(db, "117458", [sscc(3)], description="Rum Cream", gtin="2", batch="B2")
+    _run(db, "117458", [sscc(4)], description="Coffee Rum Cream", gtin="1", batch="B1")  # same product again
+
+    groups = group_cartons_by_product(fetch_job_report("117458", db).unassociated_cartons)
+    assert [(g[0].description, len(g)) for g in groups] == [("Coffee Rum Cream", 3), ("Rum Cream", 1)]
+    assert group_cartons_by_product([]) == []
+
+
+def test_a_long_mixed_product_job_paginates_with_product_headers(tmp_path):
+    db = tmp_path / "b.db"
+    n = 0
+    for product in range(4):
+        ssccs = [sscc(n + i) for i in range(1, 31)]
+        n += 30
+        _run(db, "117458", ssccs, description=f"22560{product} - Product number {product}", gtin=f"0000000000001{product}", batch=f"1174583760{product}")
+    report = fetch_job_report("117458", db)
+    pages = render_job_report_pages(report, company_name="Caribbean Label Crafts Ltd.")
+    assert report.carton_total == 120 and len(pages) >= 3

@@ -33,6 +33,8 @@ never hardcoded anywhere else. See that file for the versioning rules.
   as one product. New `labels` columns are added automatically the first time a database is opened (the file is
   backed up first, as for earlier upgrades). A pallet takes its product from its cartons; reprints copy it.
   Labels logged before this version have no saved product and still show the job's latest run's product.
+- Job Report: cartons under "No Associated Pallet SSCC" are grouped by product, each with a small header (description,
+  GTIN, batch, number of cartons and total quantity). A product that runs onto a new page repeats its header.
 
 ## 1.1.16 Beta - 2026-11-06
 
