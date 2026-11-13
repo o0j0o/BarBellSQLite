@@ -355,7 +355,7 @@ class TestDemoMode:
 
         out_path = app._write_csv(rows, "DEMO-1001", "DEMO-PS-5001", test_mode=True, demo_mode=True)
 
-        assert out_path.name == "DEMO_labels_DEMO-1001_DEMO-PS-5001_TEST.csv"
+        assert out_path.name == "DEMO_carton_jwn_labels_TEST.csv"  # never the real name a Print Station reads
         assert out_path.exists()
 
     def test_write_csv_has_no_demo_prefix_when_demo_mode_is_false(self, app, tmp_path, monkeypatch):
@@ -373,7 +373,7 @@ class TestDemoMode:
 
         out_path = app._write_csv(rows, "122984", "100495", test_mode=False, demo_mode=False)
 
-        assert out_path.name == "labels_122984_100495.csv"
+        assert out_path.name == "carton_jwn_labels.csv"  # the one fixed file BarTender Print Station reads
 
 
 CHECKED, UNCHECKED = "☑", "☐"
@@ -565,8 +565,8 @@ class TestHistoryReprintSelection:
         for original_id in original_ids:
             assert any(r.id == original_id and r.status == "original" for r in after)
 
-        csv_files = list((tmp_path / "output").glob("reprint_*.csv"))
-        assert len(csv_files) == 1
+        csv_files = list((tmp_path / "output").glob("*.csv"))
+        assert [f.name for f in csv_files] == ["carton_jwn_labels.csv"]  # reprints use the fixed file too
         with open(csv_files[0], newline="", encoding="utf-8") as f:
             content = f.read()
         assert content.count("\n") == 3  # header + 2 rows (+ trailing newline)
@@ -1020,7 +1020,7 @@ class TestGenerateCsvWriteFailure:
             "tkinter.messagebox.showerror", lambda title, msg: errors.append((title, msg))
         )
         monkeypatch.setattr(
-            "barbell_gui.write_flat_csv",
+            "src.label_files.write_flat_csv",
             lambda rows, out_path: (_ for _ in ()).throw(
                 PermissionError("[Errno 13] Permission denied")
             ),

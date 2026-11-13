@@ -349,7 +349,7 @@ class TestGenerate:
         tree = _find_treeview(win)
         assert len(tree.get_children()) == 0  # screen cleared after success
 
-    def test_generate_csv_filename_contains_pallet_and_job(self, pallet_win, monkeypatch, tmp_path):
+    def test_generate_writes_the_fixed_pallet_file_the_print_station_reads(self, pallet_win, monkeypatch, tmp_path):
         win, db_path = pallet_win
         seed_cartons(db_path, [make_carton_row("008600157112000128", quantity=27000)])
         monkeypatch.setattr("tkinter.messagebox.askyesno", lambda *a, **k: True)
@@ -366,9 +366,10 @@ class TestGenerate:
         pallet_sscc = [r for r in history if r.label_type == "PALLET"][0].sscc
 
         output_dir = tmp_path / "output"
-        csvs = list(output_dir.glob("Pallet_labels_122984_*.csv"))
-        assert len(csvs) == 1
-        assert pallet_sscc in csvs[0].name
+        csvs = list(output_dir.glob("*.csv"))
+        assert [c.name for c in csvs] == ["pallet_jwn_labels.csv"]  # exactly this name, whatever the job/SSCC
+        assert pallet_sscc in csvs[0].read_text(encoding="utf-8")
+        assert (output_dir / "archive").is_dir()  # made on the first run, nothing in it yet
 
     def test_generate_asks_confirmation_when_fewer_than_expected(self, pallet_win, monkeypatch):
         win, db_path = pallet_win

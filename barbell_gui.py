@@ -31,10 +31,13 @@ from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
 from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
 from src.db.local_store import (
+    LABEL_TYPE_CARTON,
+    LABEL_TYPE_PALLET,
     count_pallets,
     create_pallet,
     create_reprint_rows,
     count_label_history,
+    describe_labels,
     fetch_job_report,
     fetch_label_history,
     fetch_pallet_report,
@@ -43,7 +46,6 @@ from src.db.local_store import (
     list_available_cartons,
     record_generation_run,
     void_pallet,
-    write_flat_csv,
 )
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
@@ -62,6 +64,7 @@ from src.labels import (
     list_packing_slips_for_job,
 )
 from src.help_link import resolve_help_url
+from src.label_files import ArchiveError, label_file_path, write_label_file
 from src.job_report import build_job_report_pdf, render_job_report_pages
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
@@ -718,6 +721,19 @@ class BarBellApp(tk.Tk):
         if not confirmed:
             return
 
+        # The Print Station reads one fixed file, so a new run REPLACES it (the old one is archived).
+        # Ask now, BEFORE any SSCC is issued or logged, so Cancel costs nothing.
+        if not self._confirm_replace_label_files(
+            [label_file_path(self.settings.output_dir, LABEL_TYPE_CARTON, test_mode, self.settings.demo_mode)],
+            parent=self,
+            cancelled_note=(
+                "Nothing was generated, so these labels will NOT print. No SSCC numbers were used, and "
+                "the file in the output folder has not been changed.\n\n"
+                "To make these labels, run Generate Labels again."
+            ),
+        ):
+            return
+
         try:
             with self._connect() as conn:
                 rows = assemble_label_rows(
@@ -762,6 +778,15 @@ class BarBellApp(tk.Tk):
                 flat_rows, job_number, packing_slip_number, test_mode=test_mode,
                 demo_mode=self.settings.demo_mode,
             )
+        except ArchiveError as exc:
+            messagebox.showerror(
+                "Could not archive the old label file",
+                f"Labels were generated and logged to the database, but the OLD label file could not be "
+                f"moved into the archive folder, so the new file was NOT written and the old file is "
+                f"unchanged:\n{exc}\n\nClose whatever has it open, then use Job/Label History's "
+                f"Reprint Selected to export this run again (same SSCCs, no new ones).",
+            )
+            return
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
                 "CSV write failed",
@@ -775,15 +800,54 @@ class BarBellApp(tk.Tk):
         packages_used = len({r.sscc for r in rows})
         messagebox.showinfo(
             "Labels generated",
-            f"Wrote {len(rows)} label row(s) covering {packages_used} package(s) to:\n{out_path}",
+            f"Wrote {len(rows)} label row(s) covering {packages_used} package(s) to:\n{out_path}"
+            + self._archived_note(self._last_archived_file),
         )
 
     def _write_csv(self, rows, job_number, packing_slip_number, test_mode=False, demo_mode=False) -> Path:
-        output_dir = Path(self.settings.output_dir)
-        prefix = "DEMO_" if demo_mode else ""
-        suffix = "_TEST" if test_mode else ""
-        out_path = output_dir / f"{prefix}labels_{job_number}_{packing_slip_number}{suffix}.csv"
-        return write_flat_csv(rows, out_path)
+        """Writes the carton labels to the ONE fixed file BarTender Print Station reads
+        (carton_jwn_labels.csv in the Setup "CSV output directory"), after moving the file already
+        there into the archive folder. job_number / packing_slip_number are no longer part of the
+        name (they stay in the file's rows). Test and Demo runs use their own names - see
+        src/label_files.py. The archived copy's path is kept in self._last_archived_file."""
+        target = label_file_path(self.settings.output_dir, LABEL_TYPE_CARTON, test_mode, demo_mode)
+        out_path, self._last_archived_file = write_label_file(rows, target)
+        return out_path
+
+    _last_archived_file: Path | None = None
+
+    @staticmethod
+    def _archived_note(archived: Path | None) -> str:
+        """A line for a success message saying where the replaced file went (empty if none was)."""
+        return f"\n\nThe previous file was moved to the archive folder:\n{archived}" if archived else ""
+
+    def _confirm_replace_label_files(self, targets, parent, cancelled_note: str) -> bool:
+        """If any of `targets` (the fixed label files the Print Station reads) already exists, warns that
+        it is about to be replaced and gives the operator a Cancel. Returns True to carry on (also
+        when none exists - nothing to replace, so no question), False if they cancelled, after
+        saying `cancelled_note`. Nothing is moved or written here."""
+        existing = [t for t in targets if Path(t).exists()]
+        if not existing:
+            return True
+        lines = []
+        for t in existing:
+            written = datetime.datetime.fromtimestamp(Path(t).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"    {Path(t).name}   (last written {written})")
+        ok = messagebox.askokcancel(
+            "Replace the label file?",
+            f"This will replace the label file BarTender Print Station reads, in:\n{Path(existing[0]).parent}\n\n"
+            + "\n".join(lines)
+            + "\n\nThe existing file will be moved into the archive folder (with the date and time added "
+            "to its name) and the NEW labels written in its place. BarTender Print Station will then "
+            "print the new labels.\n\nClick OK to replace it, or Cancel to leave everything as it is.",
+            icon="warning",
+            default="cancel",
+            parent=parent,
+        )
+        if ok:
+            return True
+        messagebox.showinfo("Cancelled", cancelled_note, parent=parent)
+        return False
 
     @staticmethod
     def _open_file(path: Path) -> None:
@@ -1035,20 +1099,61 @@ class BarBellApp(tk.Tk):
 
             demo = self.settings.demo_mode
             db_path = self.settings.demo_db_file if demo else self.settings.local_db_file
+
+            # A reprint goes to the same fixed files the Print Station reads (carton and/or pallet,
+            # by what was ticked), so the operator never loads a file. Work out which files that is
+            # and ask BEFORE logging anything, so Cancel changes nothing.
+            try:
+                kinds = describe_labels(selected_ids, db_path)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Reprint failed", str(exc), parent=win)
+                return
+            targets = [
+                label_file_path(self.settings.output_dir, label_type, is_test, demo)
+                for label_type, is_test in sorted(set(kinds), key=lambda k: (k[0] != LABEL_TYPE_CARTON, k[1]))
+            ]
+            if not self._confirm_replace_label_files(
+                targets,
+                parent=win,
+                cancelled_note=(
+                    "Nothing was reprinted: no reprint was logged, and the file in the output folder has "
+                    "not been changed, so these labels will NOT print.\n\n"
+                    "To reprint them, tick the rows and click Reprint Selected again."
+                ),
+            ):
+                return
+
+            written = []  # (new file, archived copy of the old one or None, rows)
             try:
                 reprint_rows = create_reprint_rows(selected_ids, db_path=db_path)
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                prefix = "DEMO_" if demo else ""
-                out_path = write_flat_csv(
-                    reprint_rows, Path(self.settings.output_dir) / f"{prefix}reprint_{timestamp}.csv"
+                groups: dict[tuple[str, bool], list] = {}
+                for r in reprint_rows:
+                    groups.setdefault((r.label_type, r.test_mode), []).append(r)
+                for (label_type, is_test), group_rows in sorted(
+                    groups.items(), key=lambda kv: (kv[0][0] != LABEL_TYPE_CARTON, kv[0][1])
+                ):
+                    target = label_file_path(self.settings.output_dir, label_type, is_test, demo)
+                    new_path, archived = write_label_file(group_rows, target)
+                    written.append((new_path, archived, len(group_rows)))
+            except ArchiveError as exc:
+                messagebox.showerror(
+                    "Could not archive the old label file",
+                    f"The reprint was logged, but the OLD label file could not be moved into the archive "
+                    f"folder, so it was NOT replaced:\n{exc}\n\nClose whatever has it open, then click "
+                    f"Reprint Selected again.",
+                    parent=win,
                 )
+                return
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Reprint failed", str(exc), parent=win)
                 return
 
+            lines = [f"Wrote {n} label row(s) to:\n{p}" for p, _a, n in written]
+            moved = [a for _p, a, _n in written if a]
             messagebox.showinfo(
                 "Reprint exported",
-                f"Wrote {len(reprint_rows)} label row(s) to:\n{out_path}",
+                "\n\n".join(lines)
+                + ("\n\nThe previous file(s) were moved to the archive folder:\n" + "\n".join(map(str, moved)) if moved else ""),
                 parent=win,
             )
             refresh()  # show the newly created reprint rows if they match the current filter
@@ -1775,6 +1880,19 @@ class BarBellApp(tk.Tk):
             if not confirmed:
                 return
 
+            # The Print Station reads one fixed pallet file, so this REPLACES it (the old one is
+            # archived). Ask now, BEFORE a pallet SSCC is issued, so Cancel costs nothing.
+            if not self._confirm_replace_label_files(
+                [label_file_path(self.settings.output_dir, LABEL_TYPE_PALLET, test_mode, self.settings.demo_mode)],
+                parent=win,
+                cancelled_note=(
+                    "No pallet label was generated, so it will NOT print. No SSCC number was used, the "
+                    "scanned cartons are still on the screen, and the file in the output folder has not "
+                    "been changed.\n\nTo make the pallet label, click Generate Pallet Label again."
+                ),
+            ):
+                return
+
             if test_mode:
                 pallet_sscc = build_test_sscc(count_pallets(db_path) + 1)
             else:
@@ -1809,11 +1927,19 @@ class BarBellApp(tk.Tk):
             # exists in history and can be exported again from there
             # (Job/Label History's Reprint Selected), same SSCC, no new one.
             demo = self.settings.demo_mode
-            prefix = "DEMO_" if demo else ""
-            suffix = "_TEST" if test_mode else ""
-            out_path = Path(self.settings.output_dir) / f"{prefix}Pallet_labels_{fields['job_number']}_{pallet_sscc}{suffix}.csv"
+            out_path = label_file_path(self.settings.output_dir, LABEL_TYPE_PALLET, test_mode, demo)
             try:
-                write_flat_csv(pallet_rows, out_path)
+                out_path, archived_file = write_label_file(pallet_rows, out_path)
+            except ArchiveError as exc:
+                messagebox.showerror(
+                    "Could not archive the old label file",
+                    f"Pallet {pallet_sscc} was saved, but the OLD pallet label file could not be moved "
+                    f"into the archive folder, so the new file was NOT written and the old file is "
+                    f"unchanged:\n{exc}\n\nClose whatever has it open, then use Reprint Selected in "
+                    "Job/Label History to export it again - it will use this SAME SSCC, not a new one.",
+                    parent=win,
+                )
+                return
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror(
                     "CSV write failed",
@@ -1826,7 +1952,8 @@ class BarBellApp(tk.Tk):
 
             messagebox.showinfo(
                 "Pallet label generated",
-                f"Pallet SSCC: {pallet_sscc}\nWrote 2 label row(s) to:\n{out_path}",
+                f"Pallet SSCC: {pallet_sscc}\nWrote 2 label row(s) to:\n{out_path}"
+                + self._archived_note(archived_file),
                 parent=win,
             )
             scanned_cartons.clear()
