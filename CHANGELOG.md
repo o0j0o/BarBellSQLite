@@ -3,6 +3,34 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.18 Beta - 2026-11-13
+
+- **Label files now have fixed names, so BarTender Print Station always reads the same file.** Real carton labels
+  are written to exactly **`carton_jwn_labels.csv`** and real pallet labels to exactly **`pallet_jwn_labels.csv`**,
+  in the Setup "CSV output directory" (that setting is not changed). The old names with the job number, packing
+  slip, pallet SSCC and `_TEST` are gone. The operator never has to load a file.
+- **Archive.** Inside that directory BarBell creates a folder called `archive` (skipped if it already exists).
+  Each time a new file is made, the file already there is first moved into `archive` and renamed with the date and
+  time it was archived, e.g. `carton_jwn_labels_20261113_143052.csv`; then the new file is written. Nothing is
+  deleted. With no earlier file there is nothing to archive and no warning. If the old file cannot be moved (BarTender
+  Print Station or Excel has it open) the old file is left untouched, the new file is not written, and the
+  operator is told - the labels are already logged, so **Reprint Selected** exports them (same SSCCs).
+- **Overwrite warning with a Cancel.** When a file is already there, Generate Labels / Generate Pallet Label /
+  Reprint Selected first say that the file the Print Station reads is about to be replaced (the old one archived)
+  and offer **Cancel** (the default button). The question comes **before** any SSCC is issued or anything is
+  logged, so Cancel costs nothing: no SSCC is used, the file is unchanged, and the message says the labels will
+  not print until Generate Labels (or Generate Pallet Label / Reprint Selected) is run again.
+- **Reprint Selected** now writes the same fixed files (carton rows to `carton_jwn_labels.csv`, pallet rows to
+  `pallet_jwn_labels.csv`; a mixed selection writes both) instead of `reprint_<date>.csv`.
+- **Test mode and Demo mode keep separate names** so a practice run can never replace the file the Print Station
+  reads: `carton_jwn_labels_TEST.csv` / `pallet_jwn_labels_TEST.csv`, with a `DEMO_` prefix in Demo mode. They are
+  archived the same way.
+- The new file is written to a temporary file first and swapped in only after the old one is archived, so a failed
+  write (disk full) leaves the old file in place. New module `src/label_files.py`; 
+  `describe_labels()` in the local store; 23 new tests in `tests/test_label_files.py`, and the file-name tests
+  updated (full suite: 568 passed).
+- Still to do: the Operator Guide and the installer package do not mention this yet.
+
 ## 1.1.17 Beta - 2026-11-10
 
 - **Setup password can be changed from Setup.** A new "Setup Password" section has **New password** and

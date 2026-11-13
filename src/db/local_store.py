@@ -541,6 +541,26 @@ def write_flat_csv(rows, out_path: Path | str) -> Path:
     return out_path
 
 
+def describe_labels(label_ids: list[int], db_path: Path | str) -> list[tuple[str, bool]]:
+    """(label_type, test_mode) for each given labels.id, in the same order - read-only. Lets the
+    reprint export work out which label files it will write BEFORE it logs anything."""
+    conn = _connect(db_path)
+    try:
+        out = []
+        for label_id in label_ids:
+            row = conn.execute(
+                "SELECT l.label_type, j.test_mode FROM labels l JOIN jobs j ON j.job_number = l.job_number "
+                "WHERE l.id = ?",
+                (label_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No labels row found for id {label_id!r} - nothing to reprint")
+            out.append((row[0], bool(row[1])))
+        return out
+    finally:
+        conn.close()
+
+
 def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatLabelRow]:
     """
     For each given labels.id, appends a NEW 'reprint' row copying that
