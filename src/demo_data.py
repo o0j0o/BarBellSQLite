@@ -45,11 +45,15 @@ _TICKET_ROWS = [
     ("DEMO-1003", DEMO_CUSTOMER_NUMBER, DEMO_CUSTOMER_NAME),
 ]
 
-_PACKING_SLIP_COLS = ["Number", "Suffix", "ShipDate", "CustomerName", "NoPackage", "TicketNum"]
+_PACKING_SLIP_COLS = ["Number", "Suffix", "ShipDate", "CustomerName", "NoPackage", "TicketNum", "Notes"]
 _PACKING_SLIP_ROWS = [
-    ("DEMO-PS-5001", 1, "2026-09-01", DEMO_CUSTOMER_NAME, 2, "DEMO-1001"),
-    ("DEMO-PS-5002", 1, "2026-09-05", DEMO_CUSTOMER_2_NAME, 3, "DEMO-1002"),
-    ("DEMO-PS-5003", 1, "2026-09-10", DEMO_CUSTOMER_NAME, 1, "DEMO-1003"),
+    # Notes are free text typed by the packers; the first one is readable (2 boxes of 3 rolls x 9000 = 54,000,
+    # so Units per package is suggested as 27,000), the other two are left as plain notes to show the
+    # "type it yourself" path (DEMO-PS-5002 also carries two products).
+    ("DEMO-PS-5001", 1, "2026-09-01", DEMO_CUSTOMER_NAME, 2, "DEMO-1001",
+     "Inv # 90001 dd 09/01/2026\r12 1/2 X 12 3/8 X 10 3/8    BOX# 1 - 2    3 ROLLS X 9000"),
+    ("DEMO-PS-5002", 1, "2026-09-05", DEMO_CUSTOMER_2_NAME, 3, "DEMO-1002", "Inv # 90002 dd 09/05/2026"),
+    ("DEMO-PS-5003", 1, "2026-09-10", DEMO_CUSTOMER_NAME, 1, "DEMO-1003", ""),
 ]
 
 # A packing slip can carry multiple products (DEMO-PS-5002 does, below) - real

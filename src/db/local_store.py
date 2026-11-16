@@ -68,6 +68,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.dates import normalize_production_date
+from src.sscc import SSCC_LENGTH, TEST_SERIAL_WIDTH, TEST_SSCC_LEAD
 
 STATUS_ORIGINAL = "original"
 STATUS_VOID = "void"
@@ -476,7 +477,7 @@ def fetch_label_history(
     Matches against a pallet's OWN sscc and, separately, against carton
     rows' pallet_sscc - so searching a pallet's SSCC brings back the pallet
     row and every carton scanned onto it. SQLite's LIKE is case-insensitive
-    for ASCII, covering SSCCs with letters (e.g. TEST-SSCC-#####). Most
+    for ASCII, covering the older test SSCCs with letters (TEST-SSCC-#####). Most
     recent first.
 
     since_days limits the list to labels logged in the last N days, and
@@ -664,7 +665,7 @@ class CartonInfo:
     @property
     def extension_digit(self) -> str:
         """The plant that issued this SSCC - its first digit (see
-        src.sscc.build_sscc). Not meaningful for a TEST-SSCC-##### placeholder."""
+        src.sscc.build_sscc). Not meaningful for a test SSCC (src.sscc.build_test_sscc)."""
         return self.sscc[0]
 
 
@@ -781,12 +782,36 @@ def list_available_cartons(
         conn.close()
 
 
+def next_test_serial(db_path: Path | str) -> int:
+    """The next TEST SSCC serial to use (see src.sscc.build_test_sscc): one more than the highest
+    test serial already in the database, or 1 if there is none. Looks at every label's own SSCC and
+    at the pallet SSCC stamped on cartons, so test cartons and test pallets share ONE running count
+    that never restarts and never repeats. Worked out from the data itself (no separate counter file),
+    so it follows the database through backups and restores. Never touches the real SSCC counter, and
+    the old TEST-SSCC-##### rows (not numeric) are ignored - they are left exactly as they are."""
+    pattern = TEST_SSCC_LEAD + "[0-9]" * (SSCC_LENGTH - len(TEST_SSCC_LEAD))
+    start = len(TEST_SSCC_LEAD) + 1  # SQL SUBSTR is 1-based
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"""
+            SELECT MAX(CAST(SUBSTR(s, {start}, {TEST_SERIAL_WIDTH}) AS INTEGER)) FROM (
+                SELECT sscc AS s FROM labels
+                UNION ALL
+                SELECT pallet_sscc AS s FROM labels WHERE pallet_sscc IS NOT NULL
+            ) WHERE LENGTH(s) = {SSCC_LENGTH} AND s GLOB ?
+            """,
+            (pattern,),
+        ).fetchone()
+        return (row[0] or 0) + 1
+    finally:
+        conn.close()
+
+
 def count_pallets(db_path: Path | str) -> int:
     """Distinct pallet SSCCs logged so far (both print copies of the same
-    pallet count once) - used to pick a never-repeated sequence number for
-    build_test_sscc() when generating a pallet in test mode, since (unlike
-    a carton run's package_index) a pallet is one single item per Generate
-    action with nothing else to derive a sequence from."""
+    pallet count once). No longer used to number test pallets - see
+    next_test_serial()."""
     conn = _connect(db_path)
     try:
         cur = conn.execute("SELECT COUNT(DISTINCT sscc) FROM labels WHERE label_type = 'PALLET'")
@@ -1096,9 +1121,10 @@ def fetch_job_report(job_number: str, db_path: Path | str) -> JobReport | None:
 
     One entry per label printed in a run: the extra print copies (copy 2, 3...)
     and reprint rows are not separate cartons, and voided labels are left out.
-    It is deliberately NOT grouped by SSCC: Test-mode SSCCs (TEST-SSCC-00001...)
-    start again at 1 on every run, so the same job can hold several cartons that
-    share a test SSCC - all of them are listed. (Real SSCCs are never reused.)
+    It is deliberately NOT grouped by SSCC: the older test labels (TEST-SSCC-00001...)
+    started again at 1 on every run, so the same job can hold several cartons that
+    share a test SSCC - all of them are listed. (Real SSCCs are never reused, and
+    new test SSCCs never repeat either - see next_test_serial.)
     A carton on no (live) pallet is listed in unassociated_cartons.
     """
     job_number = job_number.strip()

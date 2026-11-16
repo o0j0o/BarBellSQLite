@@ -17,3 +17,15 @@ def app():
     app = BarBellApp()
     yield app
     app.destroy()
+
+
+@pytest.fixture(autouse=True)
+def _pinned_today(monkeypatch):
+    """The production-date rules (at most 7 days ahead, this year or last) depend on today's date, so
+    every test sees the same "today" - the suite's sample dates (260323, 260925, 261104...) then stay
+    valid whenever the tests are run. Tests of the rules themselves pass their own date."""
+    import datetime
+
+    import src.dates
+
+    monkeypatch.setattr(src.dates, "today", lambda: datetime.date(2026, 11, 13))

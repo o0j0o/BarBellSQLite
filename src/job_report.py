@@ -269,7 +269,7 @@ class _Layout:
                     (draw_w, barcode.height), Image.LANCZOS
                 ).point(lambda v: 255 if v > 128 else 0).convert("1")
             self.pages[-1].paste(barcode, (bx, by))
-        else:  # a TEST-SSCC placeholder can't be encoded as a barcode
+        else:  # a test SSCC gets the TEST PALLET box instead of a barcode
             draw.rectangle((bx, by, bx + _px(70), by + _px(13)), outline=0, width=3)
             draw.text((bx + _px(3), by + _px(2.5)), "TEST PALLET\nno barcode - fake SSCC", font=_font(8, bold=True), fill=0)
         draw.text(

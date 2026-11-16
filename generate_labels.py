@@ -35,8 +35,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.batch import build_batch_number
-from src.db.local_store import record_generation_run, write_flat_csv
-from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
+from src.db.local_store import next_test_serial, record_generation_run, write_flat_csv
+from src.dates import (
+    PRODUCTION_DATE_EXAMPLE,
+    PRODUCTION_DATE_FORMAT,
+    ProductionDateRangeError,
+    validate_production_date,
+)
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import GTIN_AI_CARTON, build_contents_element_string, build_sscc_element_string
@@ -83,7 +88,10 @@ def prompt_int(text: str) -> int:
 def prompt_date(text: str) -> str:
     raw = prompt(f"{text} ({PRODUCTION_DATE_FORMAT}, e.g. {PRODUCTION_DATE_EXAMPLE}): ")
     try:
-        parse_production_date(raw)
+        validate_production_date(raw)  # a real date, at most 7 days ahead, this year or last
+    except ProductionDateRangeError as exc:
+        print(str(exc))
+        return prompt_date(text)
     except ValueError:
         print(f"{raw!r} isn't a valid date in {PRODUCTION_DATE_FORMAT} format (e.g. {PRODUCTION_DATE_EXAMPLE}).")
         return prompt_date(text)
@@ -255,8 +263,10 @@ def main():
         batch = build_batch_number(job_number, product.prod_num)
         first_package_qty = min(units_per_package, line_item.ship_quantity)
 
+        history_db = settings.demo_db_file if settings.demo_mode else settings.local_db_file
+        test_serial_start = next_test_serial(history_db) if test_mode else None
         if test_mode:
-            preview_sscc = build_test_sscc(1)
+            preview_sscc = build_test_sscc(test_serial_start)
         else:
             next_serial = get_counter_status(settings.active_sscc_state_file).next_serial or 0
             preview_sscc = build_sscc(
@@ -267,8 +277,8 @@ def main():
         gen = None
         if test_mode:
             print(
-                "\nTest mode - using fake TEST-SSCC-##### placeholders, "
-                "not touching the real counter."
+                "\nTest mode - using TEST SSCCs (they start with zeros and count up from the last "
+                "test number), not touching the real counter."
             )
         else:
             num_packages = -(-line_item.ship_quantity // units_per_package)  # ceil, confirmation only
@@ -299,6 +309,7 @@ def main():
             gtin_override=gtin,
             audit_log_file=settings.demo_audit_log_file if settings.demo_mode else settings.audit_log_file,
             test_mode=test_mode,
+            test_serial_start=test_serial_start,
         )
 
     flat_rows = record_generation_run(

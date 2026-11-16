@@ -25,15 +25,32 @@ from pathlib import Path
 SSCC_LENGTH = 18
 
 
-def build_test_sscc(sequence_number: int) -> str:
+# A TEST SSCC is a real-shaped 18-digit SSCC - so its barcode really encodes, the scanner accepts it and
+# BarTender's GS1-128 object treats it like any other - but it starts with seven zeros. A real SSCC starts
+# with the extension digit and the GS1 Company Prefix (CLC's is 008600157112...), so the two can never
+# meet. Layout: 7 zeros + a 10-digit test serial + the GS1 check digit.
+TEST_SSCC_LEAD = "0" * 7
+TEST_SERIAL_WIDTH = 10
+MAX_TEST_SERIAL = 10**TEST_SERIAL_WIDTH - 1
+
+
+def build_test_sscc(serial: int) -> str:
     """
-    An obviously-fake SSCC placeholder for test runs. Deliberately NOT valid
-    GS1 SSCC format (wrong length/characters) so it can never be mistaken for
-    a real one downstream (in a CSV, in BarTender, on a printed label).
-    Doesn't touch the real counter/state file at all - there's nothing to
-    "waste" or "recover" using this.
+    The TEST SSCC for test serial number `serial` (1, 2, 3...): seven zeros, the serial padded to 10
+    digits, and a correct GS1 check digit - e.g. serial 17 -> 000000000000000178. Test serials are one
+    running count shared by test cartons and test pallets and are worked out from the database (see
+    src.db.local_store.next_test_serial), so no two test labels ever share a number. It never touches the
+    real SSCC counter/state file - there is nothing to "waste" or "recover" using this.
     """
-    return f"TEST-SSCC-{sequence_number:05d}"
+    if not 1 <= serial <= MAX_TEST_SERIAL:
+        raise ValueError(f"Test serial must be between 1 and {MAX_TEST_SERIAL}, got {serial!r}")
+    body = f"{TEST_SSCC_LEAD}{serial:0{TEST_SERIAL_WIDTH}d}"
+    return body + gs1_check_digit(body)
+
+
+def is_test_sscc(sscc: str) -> bool:
+    """True for an SSCC made by build_test_sscc(): 18 digits that start with the seven-zero test lead."""
+    return len(sscc) == SSCC_LENGTH and sscc.isdigit() and sscc.startswith(TEST_SSCC_LEAD)
 
 
 def _atomic_write_last_serial(state_file: Path, value: int) -> None:

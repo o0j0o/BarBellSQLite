@@ -3,6 +3,51 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.20 Beta - 2026-11-13
+
+- **The production date is checked.** It must be a real YYMMDD date (as before), **at most 7 days after today**, and
+  its two-digit year must be **this year or last year** (today in 2026: 26xxxx and 25xxxx are accepted, 24xxxx is not).
+  A refused date shows a clear message - for example "261121 is 8 days in the future ... the latest allowed today is
+  261120" - and stops Generate Labels and Preview before anything is issued or logged. The same rules apply in Test
+  and Demo mode. History's Date search is not restricted. The command-line `generate_labels.py` applies them too.
+- **Logistics labels per package now starts at 1** (and comes back to 1 if it was left blank when a job is looked up).
+- **Units per package is filled in from the packing slip's notes** when they can be read. The packers type the box
+  contents into `PackingSlip.Notes` (for example `BOX# 25 - 44  3 ROLLS X 9000 ... BOX# 45  1 ROLL X 7000`); BarBell
+  reads the box lines and suggests the fullest box (27,000 there), with a small note saying where it came from. It only
+  suggests a number when the notes **add up to the packing slip** - the same number of boxes as Label Traxx's
+  NoPackage and exactly the slip's quantity - and the slip carries one product; otherwise the box is left empty to
+  type in as before. The operator can change it, and a number they typed is never wiped. Checked against 60 recent
+  J. Wray & Nephew packing slips with box notes: 51 gave a suggestion, 7 had more than one product and 2 did not add
+  up (no suggestion for those).
+- New `src/packing_notes.py` and `validate_production_date()` in `src/dates.py`; `PackingSlipSummary` carries the notes;
+  the Demo data's first packing slip has readable notes. Tests pin "today" to 13 Nov 2026 (`tests/conftest.py`) so the
+  date rules and the suite's sample dates stay valid whenever they are run.
+- Still to do: the Operator Guide does not describe these yet.
+
+## 1.1.19 Beta - 2026-11-13
+
+- **Test-mode SSCCs are now numeric and never repeat.** A test label's SSCC is 18 digits: seven zeros, a running
+  test number, and a correct GS1 check digit - e.g. `000000000000000178` is test number 17. It used to be
+  `TEST-SSCC-00001`, which restarted at 1 on every run, so the same "SSCC" turned up on many labels and jobs
+  (the development database had 1,517 test label rows sharing only 308 SSCCs) and a scan could land on the wrong
+  carton. Because it is a real 18-digit number the barcode really encodes, the scanner accepts it, and BarTender
+  treats it like any other SSCC.
+- **One running test count**, shared by test cartons and test pallets, worked out from the database itself
+  (the highest test number already there, plus one) - no separate counter file, so it follows the database through
+  backups and restores. It never restarts, and it never touches the real SSCC counter. Test Preview shows the next
+  test number.
+- A test SSCC can never be a real one: real SSCCs start with the extension digit and the GS1 Company Prefix
+  (`008600157112...`), test ones start with seven zeros. Whether a carton may go on a pallet is still decided by its
+  test flag, so a test carton cannot go on a real pallet (and the other way round).
+- Reports are unchanged in look: a test pallet's report keeps its **TEST PALLET** box and no barcodes for test
+  numbers.
+- **Old test rows are left alone** (`TEST-SSCC-#####` and their duplicates stay exactly as they are; they are not
+  counted, and the old format is still accepted by the Pallet screen's scan box in test mode). Hide test labels in
+  History still hides them all.
+- `build_test_sscc(serial)`, `is_test_sscc()` and `next_test_serial()`; `assemble_label_rows()` takes
+  `test_serial_start` (required in test mode). The command-line `generate_labels.py` follows.
+- Still to do: the Operator Guide's History text mentions the old `TEST-SSCC` numbers.
+
 ## 1.1.18 Beta - 2026-11-13
 
 - **Label files now have fixed names, so BarTender Print Station always reads the same file.** Real carton labels

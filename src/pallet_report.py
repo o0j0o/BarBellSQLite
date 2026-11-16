@@ -29,6 +29,7 @@ from src.gs1 import (
     build_sscc_barcode_data,
     build_sscc_element_string,
 )
+from src.sscc import is_test_sscc
 from src.version import version_string
 
 DPI = 300
@@ -162,9 +163,12 @@ def _carton_contents_barcode(carton: PalletReportCarton) -> tuple[str, str] | No
 
 
 def _is_real_sscc(sscc: str) -> bool:
-    """False for build_test_sscc()'s TEST-SSCC-##### placeholders, which
-    aren't digits and so can't be encoded as a (00) GS1-128 barcode."""
-    return sscc.isdigit()
+    """False for a TEST SSCC - one from build_test_sscc() (digits starting with the
+    seven-zero test lead) or an older TEST-SSCC-##### placeholder - so a test pallet's
+    report keeps its TEST PALLET box and no barcode, exactly as before test SSCCs became
+    numeric (a numeric test SSCC could be encoded, but a test report must not carry a
+    barcode that looks like a real one)."""
+    return sscc.isdigit() and not is_test_sscc(sscc)
 
 
 def _paginate(carton_count: int) -> list[tuple[int, int]]:
@@ -297,7 +301,7 @@ def render_pallet_report_pages(
             top = row_y + _px(1.8)
             draw.text((_px(COL_NUM), top), str(index), font=num_font, fill=0)
             draw.text((_px(COL_SSCC), top), carton.sscc, font=sscc_font, fill=0)
-            if _is_real_sscc(carton.sscc):  # a TEST-SSCC placeholder can't be encoded
+            if _is_real_sscc(carton.sscc):  # a test SSCC gets no barcode
                 sscc_barcode = _barcode_1bit(
                     build_sscc_barcode_data(carton.sscc), CARTON_SSCC_BARCODE_HEIGHT_MM,
                     _CARTON_SSCC_MODULE_MM,

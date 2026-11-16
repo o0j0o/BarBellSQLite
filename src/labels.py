@@ -44,6 +44,7 @@ class PackingSlipSummary:
     customer_name: str
     ship_quantity: int
     no_package: int
+    notes: str = ""  # PackingSlip.Notes - free text from the packers (see src/packing_notes.py)
 
 
 def list_packing_slips_for_job(conn, job_number: str) -> list[PackingSlipSummary]:
@@ -62,6 +63,7 @@ def list_packing_slips_for_job(conn, job_number: str) -> list[PackingSlipSummary
                 customer_name=slip["CustomerName"],
                 ship_quantity=_total_ship_quantity(conn, slip["Number"]),
                 no_package=slip["NoPackage"],
+                notes=slip.get("Notes") or "",
             )
         )
     return summaries
@@ -227,6 +229,7 @@ def assemble_label_rows(
     gtin_override: str | None = None,
     audit_log_file: Path | str | None = None,
     test_mode: bool = False,
+    test_serial_start: int | None = None,
 ) -> list[LabelRow]:
     """
     line_item is the ONE PackSlipItem line the user picked from
@@ -237,6 +240,10 @@ def assemble_label_rows(
     from build_test_sscc() instead, so sscc_generator can be None and
     sscc_state.json is never touched. Use this to try out the whole flow
     without consuming (or needing to "recover") any real SSCCs.
+    test_serial_start (required with test_mode) is the first test serial to
+    use - the caller gets it from src.db.local_store.next_test_serial() so
+    every test label in the database has its own number; package 1 gets
+    test_serial_start, package 2 the next, and so on.
 
     gtin_override, while Settings.allow_manual_gtin_override is True (the
     Beta default), is the GTIN the caller resolved with the user - straight
@@ -253,6 +260,8 @@ def assemble_label_rows(
     """
     if not test_mode and sscc_generator is None:
         raise ValueError("sscc_generator is required unless test_mode=True")
+    if test_mode and test_serial_start is None:
+        raise ValueError("test_serial_start is required when test_mode=True (see next_test_serial)")
 
     ticket = get_ticket_info(conn, job_number)
     product = get_product_info(conn, line_item.product_number)
@@ -289,7 +298,9 @@ def assemble_label_rows(
 
     rows = []
     for package_index, package_qty in enumerate(package_quantities, start=1):
-        sscc = build_test_sscc(package_index) if test_mode else sscc_generator.next_sscc()
+        sscc = (
+            build_test_sscc(test_serial_start + package_index - 1) if test_mode else sscc_generator.next_sscc()
+        )
         for copy_index in range(1, labels_per_package + 1):
             rows.append(
                 LabelRow(

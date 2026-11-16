@@ -11,7 +11,7 @@ from src.labels import (
     get_ticket_info,
     list_packing_slip_line_items,
 )
-from src.sscc import SSCCGenerator
+from src.sscc import SSCCGenerator, build_test_sscc, is_test_sscc
 
 CLC_PREFIX = "08600157112"
 
@@ -265,6 +265,7 @@ def test_assemble_label_rows_test_mode_never_touches_the_real_counter(tmp_path):
         labels_per_package=2,
         production_date="260323",
         test_mode=True,
+        test_serial_start=1,
     )
 
     assert len(rows) == 42  # same 21 packages x 2 copies as the real-mode test
@@ -272,7 +273,8 @@ def test_assemble_label_rows_test_mode_never_touches_the_real_counter(tmp_path):
 
     test_sccs = {r.sscc for r in rows}
     assert len(test_sccs) == 21  # one per package, all unique
-    assert all(s.startswith("TEST-SSCC-") for s in test_sccs)
+    assert all(is_test_sscc(s) for s in test_sccs)  # numeric test SSCCs, never a real one
+    assert test_sccs == {build_test_sscc(n) for n in range(1, 22)}  # numbered from test_serial_start=1
 
 
 def test_assemble_label_rows_blocks_on_missing_gtin(tmp_path):
@@ -327,6 +329,7 @@ def test_assemble_label_rows_uses_gtin_override_when_given():
         production_date="260323",
         gtin_override="00000012345670",
         test_mode=True,
+        test_serial_start=1,
     )
     assert rows[0].gtin == "00000012345670"
 
@@ -344,6 +347,7 @@ def test_assemble_label_rows_revalidates_gtin_override():
             production_date="260323",
             gtin_override="not-a-gtin",
             test_mode=True,
+            test_serial_start=1,
         )
 
 
@@ -359,6 +363,7 @@ def test_assemble_label_rows_writes_audit_record_for_label_traxx_source(tmp_path
         production_date="260323",
         audit_log_file=log_file,
         test_mode=True,
+        test_serial_start=1,
     )
     record = json.loads(log_file.read_text(encoding="utf-8").strip())
     assert record["job_number"] == "122984"
@@ -383,6 +388,7 @@ def test_assemble_label_rows_writes_audit_record_for_manual_override_source(tmp_
         gtin_override="00000012345670",  # different from BC_Start
         audit_log_file=log_file,
         test_mode=True,
+        test_serial_start=1,
     )
     record = json.loads(log_file.read_text(encoding="utf-8").strip())
     assert record["bc_start_value"] == VALID_BC_START
@@ -403,6 +409,7 @@ def test_assemble_label_rows_writes_audit_record_for_manual_empty_source(tmp_pat
         gtin_override="00000012345670",
         audit_log_file=log_file,
         test_mode=True,
+        test_serial_start=1,
     )
     record = json.loads(log_file.read_text(encoding="utf-8").strip())
     assert record["bc_start_value"] == ""
@@ -421,5 +428,6 @@ def test_assemble_label_rows_skips_audit_logging_when_no_log_file_given(tmp_path
         labels_per_package=1,
         production_date="260323",
         test_mode=True,
+        test_serial_start=1,
     )
     assert list(tmp_path.iterdir()) == []

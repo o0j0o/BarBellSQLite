@@ -29,11 +29,15 @@ from PIL import Image, ImageTk
 from src.backup import BackupError, REASON_EXIT, REASON_MANUAL, create_backup
 from src.barcode_render import render_barcode_image
 from src.batch import build_batch_number
-from src.dates import PRODUCTION_DATE_EXAMPLE, PRODUCTION_DATE_FORMAT, parse_production_date
+from src.dates import (
+    PRODUCTION_DATE_EXAMPLE,
+    PRODUCTION_DATE_FORMAT,
+    ProductionDateRangeError,
+    validate_production_date,
+)
 from src.db.local_store import (
     LABEL_TYPE_CARTON,
     LABEL_TYPE_PALLET,
-    count_pallets,
     create_pallet,
     create_reprint_rows,
     count_label_history,
@@ -44,6 +48,7 @@ from src.db.local_store import (
     get_setup_password_hash,
     find_carton_by_sscc,
     list_available_cartons,
+    next_test_serial,
     record_generation_run,
     void_pallet,
 )
@@ -66,6 +71,7 @@ from src.labels import (
 from src.help_link import resolve_help_url
 from src.label_files import ArchiveError, label_file_path, write_label_file
 from src.job_report import build_job_report_pdf, render_job_report_pages
+from src.packing_notes import read_units_per_full_box
 from src.pallet_report import build_pallet_report_pdf
 from src.pallet_scan import ScanError, check_carton_for_pallet, clean_scanned_sscc
 from src.settings import DEFAULT_SETTINGS_FILE, load_settings
@@ -101,6 +107,7 @@ HISTORY_PERIODS = {
     "Last year": (365, "a year"),
     "All history": (None, ""),
 }
+DEFAULT_LABELS_PER_PACKAGE = "1"  # "Logistics labels per package" starts at 1 (and comes back to 1 if left blank)
 HISTORY_DEFAULT_PERIOD = "Last 90 days"
 HISTORY_ALL_PERIOD = "All history"
 
@@ -368,9 +375,15 @@ class BarBellApp(tk.Tk):
         ttk.Entry(pkg_frame, textvariable=self.units_per_package_var, width=15).grid(
             row=0, column=1, sticky="w", padx=5
         )
+        # Where a default came from (set by _prefill_units_from_notes); cleared as soon as it is edited
+        self.units_hint_var = tk.StringVar()
+        ttk.Label(pkg_frame, textvariable=self.units_hint_var, wraplength=270, font=("", 8)).grid(
+            row=0, column=2, sticky="w", padx=8
+        )
+        self.units_per_package_var.trace_add("write", self._on_units_edited)
 
         ttk.Label(pkg_frame, text="Logistics labels per package:").grid(row=1, column=0, sticky="w")
-        self.labels_per_package_var = tk.StringVar()
+        self.labels_per_package_var = tk.StringVar(value=DEFAULT_LABELS_PER_PACKAGE)
         ttk.Entry(pkg_frame, textvariable=self.labels_per_package_var, width=15).grid(
             row=1, column=1, sticky="w", padx=5
         )
@@ -412,6 +425,8 @@ class BarBellApp(tk.Tk):
         self._reset_product_selection()
         self._slips = []
         self._selected_slip = None
+        if not self.labels_per_package_var.get().strip():
+            self.labels_per_package_var.set(DEFAULT_LABELS_PER_PACKAGE)
 
         try:
             with self._connect() as conn:
@@ -439,6 +454,38 @@ class BarBellApp(tk.Tk):
         matching messagebox is dismissed."""
         self.gtin_status_label.config(text=text, foreground="red" if error else "")
 
+    _units_autofilled: str | None = None  # the Units per package value BarBell filled in itself, if any
+
+    def _on_units_edited(self, *_args):
+        """Once the operator changes Units per package, it is no longer 'from the notes'."""
+        if self.units_hint_var.get() and self.units_per_package_var.get() != self._units_autofilled:
+            self.units_hint_var.set("")
+
+    def _clear_units_autofill(self):
+        """Removes a Units per package value that BarBell filled in (never one the operator typed)."""
+        if self._units_autofilled is not None and self.units_per_package_var.get() == self._units_autofilled:
+            self.units_per_package_var.set("")
+        self._units_autofilled = None
+        self.units_hint_var.set("")
+
+    def _prefill_units_from_notes(self):
+        """Suggests Units per package from the packing slip's Notes (src/packing_notes.py): the units in a
+        full box, but only when the notes add up to the slip's box count and quantity and the slip carries
+        one product. Otherwise nothing is filled in and the operator types it, as before."""
+        slip = self._selected_slip
+        self._clear_units_autofill()
+        if slip is None:
+            return
+        reading = read_units_per_full_box(
+            slip.notes, slip.ship_quantity, slip.no_package, product_count=len(self._line_items)
+        )
+        if reading.units_per_full_box is None:
+            return
+        value = str(reading.units_per_full_box)
+        self._units_autofilled = value
+        self.units_per_package_var.set(value)
+        self.units_hint_var.set(f"From the packing slip notes ({reading.full_box_text}). Change it if that is wrong.")
+
     def _reset_product_selection(self):
         self.product_listbox.delete(0, tk.END)
         self._line_items = []
@@ -447,6 +494,7 @@ class BarBellApp(tk.Tk):
         self._set_gtin_status_text("")
         self.gtin_entry_var.set("")
         self.gtin_entry.config(state="normal")
+        self._clear_units_autofill()
 
     def _on_slip_selected(self, _event):
         selection = self.slip_listbox.curselection()
@@ -487,6 +535,7 @@ class BarBellApp(tk.Tk):
 
         self._product = product
         self._apply_gtin_entry_state_for_product(product)
+        self._prefill_units_from_notes()
 
     def _apply_gtin_entry_state_for_product(self, product):
         """
@@ -585,7 +634,10 @@ class BarBellApp(tk.Tk):
 
         production_date = self.production_date_var.get().strip()
         try:
-            parse_production_date(production_date)
+            validate_production_date(production_date)  # a real date, at most 7 days ahead, this year or last
+        except ProductionDateRangeError as exc:
+            messagebox.showerror("Invalid date", str(exc))
+            return None
         except ValueError:
             messagebox.showerror(
                 "Invalid date",
@@ -601,7 +653,7 @@ class BarBellApp(tk.Tk):
         batch = build_batch_number(job_number, self._product.prod_num)
         first_package_qty = min(units_per_package, total_qty)
         preview_sscc = (
-            build_test_sscc(1)
+            build_test_sscc(next_test_serial(self._active_db_file()))
             if test_mode
             else build_sscc(
                 self.settings.active_gs1_company_prefix,
@@ -624,6 +676,10 @@ class BarBellApp(tk.Tk):
             "first_package_qty": first_package_qty,
             "preview_sscc": preview_sscc,
         }
+
+    def _active_db_file(self):
+        """The history database in use: the Demo one in Demo Mode, otherwise the real one."""
+        return self.settings.demo_db_file if self.settings.demo_mode else self.settings.local_db_file
 
     def _preview_barcode(self):
         info = self._gather_preview_inputs()
@@ -659,7 +715,7 @@ class BarBellApp(tk.Tk):
             win.__dict__.setdefault("_photos", []).append(photo)
 
         if info["test_mode"]:
-            note = "Test mode - this SSCC is a fake placeholder, not a real one."
+            note = "Test mode - this is a TEST SSCC (starts with zeros), not a real one. It is the next test number."
         else:
             note = "This is the NEXT real SSCC that would be issued - previewing does not consume it."
         ttk.Label(frame, text=note, wraplength=350, justify="center").pack(pady=(10, 0))
@@ -700,9 +756,9 @@ class BarBellApp(tk.Tk):
             confirmed = messagebox.askyesno(
                 "Confirm test run",
                 preview_text
-                + f"Test mode: will generate {num_packages} fake TEST-SSCC-##### row(s) for job "
-                f"{job_number}, packing slip {packing_slip_number}. The real SSCC counter will "
-                f"NOT be touched. Continue?",
+                + f"Test mode: will generate {num_packages} TEST SSCC(s) (they start with zeros and "
+                f"count up from the last test number) for job {job_number}, packing slip "
+                f"{packing_slip_number}. The real SSCC counter will NOT be touched. Continue?",
             )
         else:
             confirmed = messagebox.askyesno(
@@ -735,9 +791,12 @@ class BarBellApp(tk.Tk):
             return
 
         try:
+            # Test labels continue the one running test count in the database, so no two ever match.
+            test_serial_start = next_test_serial(self._active_db_file()) if test_mode else None
             with self._connect() as conn:
                 rows = assemble_label_rows(
                     conn=conn,
+                    test_serial_start=test_serial_start,
                     sscc_generator=gen,
                     job_number=job_number,
                     line_item=line_item,
@@ -1894,7 +1953,7 @@ class BarBellApp(tk.Tk):
                 return
 
             if test_mode:
-                pallet_sscc = build_test_sscc(count_pallets(db_path) + 1)
+                pallet_sscc = build_test_sscc(next_test_serial(db_path))  # the one test count, shared with cartons
             else:
                 pallet_sscc = SSCCGenerator(
                     self.settings.active_gs1_company_prefix,

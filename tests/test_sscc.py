@@ -10,6 +10,7 @@ from src.sscc import (
     build_test_sscc,
     get_counter_status,
     gs1_check_digit,
+    is_test_sscc,
     serial_reference_width,
 )
 
@@ -165,13 +166,35 @@ class TestArchiveAndResetStateFile:
 
 
 class TestBuildTestSscc:
-    def test_format_is_obviously_not_a_real_sscc(self):
-        value = build_test_sscc(1)
-        assert value == "TEST-SSCC-00001"
-        assert len(value) != SSCC_LENGTH  # can never be mistaken for a real 18-digit SSCC
-        assert not value.isdigit()
+    def test_a_test_sscc_is_18_digits_zeros_then_the_serial_then_a_correct_check_digit(self):
+        assert build_test_sscc(1) == "000000000000000017"
+        assert build_test_sscc(17) == "000000000000000178"
+        for serial in (1, 2, 17, 308, 99999, 123456789):
+            value = build_test_sscc(serial)
+            assert len(value) == SSCC_LENGTH and value.isdigit()
+            assert value[:7] == "0000000"  # the test lead
+            assert int(value[7:17]) == serial  # the running count, readable
+            assert value[-1] == gs1_check_digit(value[:-1])  # a scanner accepts it as a valid SSCC
 
-    def test_sequence_numbers_are_unique_and_stable(self):
-        assert build_test_sscc(0) == "TEST-SSCC-00000"
-        assert build_test_sscc(20) == "TEST-SSCC-00020"
-        assert build_test_sscc(1) != build_test_sscc(2)
+    def test_a_test_sscc_can_never_be_a_real_one(self):
+        """Real SSCCs start with the extension digit + GS1 Company Prefix (Barbados 008600157112..., Jamaica 108600157112...)."""
+        for serial in (1, 500, 99999):
+            assert not build_test_sscc(serial).startswith("0086")
+            assert not build_test_sscc(serial).startswith(CLC_PREFIX[:1] + CLC_PREFIX)
+        assert not is_test_sscc(build_sscc(CLC_PREFIX, "0", 159))
+        assert not is_test_sscc(build_sscc(CLC_PREFIX, "1", 41))
+
+    def test_is_test_sscc_recognises_only_the_new_numeric_form(self):
+        assert is_test_sscc(build_test_sscc(5))
+        assert not is_test_sscc("TEST-SSCC-00005")  # the older placeholders are a different thing
+        assert not is_test_sscc("0000000000000001")  # wrong length
+        assert not is_test_sscc("")
+
+    def test_serial_numbers_are_unique_and_stable(self):
+        assert build_test_sscc(20) == build_test_sscc(20)
+        assert len({build_test_sscc(n) for n in range(1, 2001)}) == 2000
+
+    @pytest.mark.parametrize("bad", [0, -1, 10**10])
+    def test_serial_must_be_in_range(self, bad):
+        with pytest.raises(ValueError):
+            build_test_sscc(bad)

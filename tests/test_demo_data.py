@@ -2,6 +2,7 @@ import pytest
 
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gtin import InvalidGTINError
+from src.sscc import is_test_sscc
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -80,10 +81,11 @@ def test_assemble_label_rows_end_to_end_against_demo_connection():
         labels_per_package=1,
         production_date="260916",
         test_mode=True,
+        test_serial_start=1,
     )
 
     assert len(rows) == 2  # 54000 / 27000 = 2 packages, 1 copy each
-    assert all(r.sscc.startswith("TEST-SSCC-") for r in rows)  # demo never issues a real SSCC
+    assert all(is_test_sscc(r.sscc) for r in rows)  # demo never issues a real SSCC
     assert rows[0].gtin is not None
     assert rows[0].job_number == "DEMO-1001"
 
@@ -104,4 +106,5 @@ def test_assemble_label_rows_blocks_on_demo_products_missing_gtin():
             labels_per_package=1,
             production_date="260916",
             test_mode=True,
+            test_serial_start=1,
         )

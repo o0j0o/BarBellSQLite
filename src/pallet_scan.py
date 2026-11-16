@@ -15,11 +15,13 @@ cleanup before it's usable as an SSCC:
     arrives as "00" + 18 digits = 20 characters total
 
 After cleanup, a valid scan is exactly 18 digits with a correct GS1 mod-10
-check digit (src.sscc.gs1_check_digit) - or, in test_mode only, the exact
-TEST-SSCC-##### placeholder format src.sscc.build_test_sscc() produces
-(not a real barcode - there's nothing to scan for it - but recognized as
-typed input so the rest of the pallet-building flow can still be exercised
-in test mode without a real scannable SSCC to print). A scan that looks
+check digit (src.sscc.gs1_check_digit). A TEST SSCC (src.sscc.build_test_sscc:
+seven zeros, a test serial, a correct check digit) is just such a number, so
+it scans like any other - whether it may go on this pallet is decided by the
+carton's test flag, not by its format (see check_carton_for_pallet). The older
+TEST-SSCC-##### placeholders from before test SSCCs became numeric are still
+accepted, in test_mode only, so test cartons already in the history stay
+usable. A scan that looks
 like the (02)... contents barcode (commonly mis-scanned instead of the
 SSCC barcode below it) gets a specific, actionable message instead of a
 generic one.
@@ -50,8 +52,8 @@ class ContentsBarcodeScannedError(ScanError):
 
 def clean_scanned_sscc(raw: str, test_mode: bool = False) -> str:
     """
-    Cleans up one raw scan and returns a validated SSCC string (18 digits,
-    or the TEST-SSCC-##### placeholder while test_mode=True), or raises
+    Cleans up one raw scan and returns a validated SSCC string (18 digits, or
+    - while test_mode=True - an older TEST-SSCC-##### placeholder), or raises
     ScanError/ContentsBarcodeScannedError with an operator-facing message.
     """
     text = raw.strip()
