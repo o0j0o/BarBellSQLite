@@ -32,7 +32,7 @@ from pathlib import Path
 
 from src.audit import build_gtin_audit_record, record_gtin_audit
 from src.batch import build_batch_number
-from src.gtin import InvalidGTINError, classify_gtin_source, normalize_gtin
+from src.gtin import InvalidGTINError, checked_gtin14, classify_gtin_source, normalize_gtin14
 from src.sscc import SSCCGenerator, build_test_sscc
 
 
@@ -144,7 +144,7 @@ def get_product_info(conn, prod_num: str) -> ProductInfo:
     gtin = None
     gtin_error = None
     try:
-        gtin = normalize_gtin(raw_gtin)
+        gtin = normalize_gtin14(raw_gtin)
     except InvalidGTINError as exc:
         gtin_error = str(exc)
 
@@ -266,13 +266,15 @@ def assemble_label_rows(
     ticket = get_ticket_info(conn, job_number)
     product = get_product_info(conn, line_item.product_number)
 
+    product_label = f"{product.description} (item {product.item_number}, P/N {product.prod_num})"
     if gtin_override is not None:
-        used_gtin = normalize_gtin(gtin_override)
+        used_gtin = checked_gtin14(gtin_override, job_number=ticket.job_number, product=product_label)
     elif product.gtin is not None:
         used_gtin = product.gtin
     else:
         raise InvalidGTINError(
-            f"Item {product.item_number} (P/N {product.prod_num}): "
+            f"Job {ticket.job_number}, product {product_label}: "
+            f"the GTIN {(product.gtin_raw or '')!r} cannot be used - "
             f"{product.gtin_error or 'GTIN is missing'}. "
             "Fix Product.BC_Start (\"Barcode Start\") in Label Traxx before generating labels."
         )

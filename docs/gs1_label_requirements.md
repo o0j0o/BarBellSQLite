@@ -42,7 +42,7 @@ briefing's own GTIN-vs-SSCC distinction.)
 **Read through `ReadOnlyConnection`, like everything else** - `get_product_info()` in
 `src/labels.py`. It's free text, so it's validated via `src/gtin.py::normalize_gtin()`:
 whitespace-stripped throughout (real values use GS1 grouping spaces, e.g.
-`'0 51096 18492 1'`), then checked for digits-only, valid length (8/12/13/14), and a
+`'0 51096 18492 1'`), then checked for digits-only, valid length (12/13/14), and a
 correct mod-10 check digit. A missing or invalid value is a **blocking, non-dismissible
 error** - it names the item, the P/N, what's wrong, and the raw value found - not a
 warning that can be worked around in BarBell; see QUESTIONS.md #12.

@@ -45,7 +45,7 @@ from src.dates import (
 from src.db.readonly_connection import ReadOnlyConnection
 from src.demo_data import DEMO_JOB_NUMBERS, DemoConnection
 from src.gs1 import GTIN_AI_CARTON, build_contents_element_string, build_sscc_element_string
-from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
+from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin14
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -185,7 +185,7 @@ def resolve_gtin(product, settings) -> str:
 
     while True:
         try:
-            normalized = normalize_gtin(raw)
+            normalized = normalize_gtin14(raw)
             break
         except InvalidGTINError as exc:
             print(str(exc))

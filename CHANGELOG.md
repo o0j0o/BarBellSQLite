@@ -3,6 +3,32 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.21 Beta - 2026-11-16
+
+- **The GTIN is always carried as 14 digits, including its check digit.** The BarTender template drops the last digit,
+  works the check digit out again itself and then insists on exactly 13 characters, so it must be handed 14 digits
+  (`636191036407` in Label Traxx becomes `00636191036407`). The BarTender template is not changed.
+- **One helper does it: `normalize_gtin14()` in `src/gtin.py`.** It takes 12, 13 or 14 digits (spaces and hyphens are
+  removed first), pads to 14 with zeros on the left and checks the GS1 check digit. A GTIN-14 with an indicator digit
+  1 to 8 (for example `10636191036404`) is accepted and checked on its own check digit. Everything that reads, stores,
+  exports, shows or barcodes a GTIN goes through it. (`normalize_gtin` is kept as another name for the same function.)
+- **Stricter than before:** an 8-digit GTIN is no longer accepted - only 12, 13 or 14 digits. A value with a letter or
+  other character in it is refused, not cleaned up.
+- **A GTIN that fails is never exported or printed.** The CSV writer (`write_flat_csv`) now checks every row before it
+  opens the file - carton (AI 01), pallet (AI 02), reprints and Test Mode alike - and writes nothing if any GTIN is
+  blank, the wrong length, not numeric or has a wrong check digit. The message names the job, the product and the bad
+  value. This matters because BarTender recalculates the check digit, so a wrong one would print looking valid.
+- The Pallet screen checks the GTIN before Preview draws a barcode and before a pallet SSCC is issued. A reprint of a
+  label whose stored GTIN is bad is refused before anything is logged. Carton Preview/Generate messages now name the
+  job and product too.
+- The Pallet Report and Job Report take their GTIN (text and barcodes) from the same helper, so they match the
+  BarTender label; a stored GTIN that fails shows as "INVALID" / no barcode instead of a wrong barcode.
+- The database already holds 14-digit GTINs, so there is no migration and no schema change.
+- SSCC generation, the Jobs/Labels logic, reprint behaviour and the Print Station files are unchanged.
+- Note: BarBell writes `00636191036407`, but a label CSV opened and saved in Excel loses its leading zeros (the GTIN
+  becomes `636191036407` and a test SSCC becomes e.g. `291`). Do not open the label CSVs in Excel before printing.
+- New tests in `tests/test_gtin14.py`.
+
 ## 1.1.20 Beta - 2026-11-13
 
 - **The production date is checked.** It must be a real YYMMDD date (as before), **at most 7 days after today**, and

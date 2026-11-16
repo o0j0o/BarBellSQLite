@@ -185,7 +185,7 @@ def test_get_product_info_flags_wrong_length_bc_start():
     product = get_product_info(make_fake_conn(bc_start="0 12061"), "47388")
     assert product.gtin is None
     assert product.gtin_raw == "0 12061"
-    assert "8, 12, 13, or 14" in product.gtin_error
+    assert "12, 13 or 14" in product.gtin_error
 
 
 def test_get_product_info_flags_bad_check_digit_bc_start():

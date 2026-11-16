@@ -30,10 +30,10 @@ See CHANGELOG.md for the history behind each bump.
 
 MAJOR = 1
 MINOR = 1
-PATCH = 20
+PATCH = 21
 BETA = True
 
-BUILD_DATE = "2026-11-13"  # date of the most recent change
+BUILD_DATE = "2026-11-16"  # date of the most recent change
 
 
 def version_string() -> str:

@@ -101,7 +101,7 @@ def test_resolve_gtin_retyping_the_same_value_needs_no_confirmation(monkeypatch)
 
 
 def test_resolve_gtin_different_value_requires_confirmation_and_proceeds_on_yes(monkeypatch, capsys):
-    inputs = iter(["12345670", "y"])  # different GTIN, then confirm
+    inputs = iter(["000012345670", "y"])  # different GTIN, then confirm
     monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
 
     result = resolve_gtin(
@@ -114,7 +114,7 @@ def test_resolve_gtin_different_value_requires_confirmation_and_proceeds_on_yes(
 
 
 def test_resolve_gtin_different_value_cancels_on_decline(monkeypatch):
-    inputs = iter(["12345670", "n"])
+    inputs = iter(["000012345670", "n"])
     monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
 
     with pytest.raises(SystemExit) as exc_info:

@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw
 
 from src.db.local_store import JobReport, JobReportCarton, JobReportPallet
 from src.gs1 import build_contents_element_string, build_sscc_barcode_data, build_sscc_element_string
+from src.gtin import gtin14_or_none
 from src.pallet_report import (
     DPI,
     MARGIN_MM,
@@ -49,6 +50,22 @@ def group_cartons_by_product(cartons: list[JobReportCarton]) -> list[list[JobRep
     for carton in cartons:
         groups.setdefault((carton.description, carton.gtin, carton.batch), []).append(carton)
     return list(groups.values())
+
+
+def _shown_gtin(gtin: str | None) -> str:
+    """The GTIN as the report prints it: the 14-digit value from src.gtin (the same one the
+    BarTender label carries), "-" if there is none, or the stored value marked INVALID."""
+    if not gtin:
+        return "-"
+    return gtin14_or_none(gtin) or f"{gtin} INVALID"
+
+
+def _shown_gtin(gtin: str | None) -> str:
+    """The GTIN as the report prints it: the 14-digit value from src.gtin (the same one the
+    BarTender label carries), "-" if there is none, or the stored value marked INVALID."""
+    if not gtin:
+        return "-"
+    return gtin14_or_none(gtin) or f"{gtin} INVALID"
 
 
 def _fit_bold(draw, text: str, max_px: int, start_pt: float, min_pt: float):
@@ -176,7 +193,7 @@ class _Layout:
             (_px(COL_DESC), top), carton.description,
             font=self.desc_font, fill=0,
         )
-        gtin = carton.gtin or "-"
+        gtin = _shown_gtin(carton.gtin)
         draw.text((_px(COL_GTIN), top), gtin, font=body, fill=0)
         date_font = body
         draw.text(
@@ -208,7 +225,7 @@ class _Layout:
         right_text = f"{len(group):,} carton(s)   Qty {sum(c.quantity for c in group):,}"
         right_font = _font(10, bold=True)
         draw.text((self.right - _text_width(draw, right_text, right_font), top), right_text, font=right_font, fill=0)
-        left_text = f"{first.description}   GTIN {first.gtin or '-'}   Batch {first.batch}"
+        left_text = f"{first.description}   GTIN {_shown_gtin(first.gtin)}   Batch {first.batch}"
         if continued:
             left_text += "  (continued)"
         room = self.right - _px(COL_NUM) - _text_width(draw, right_text, right_font) - _px(8)
@@ -281,7 +298,7 @@ class _Layout:
         label_font, value_font = _font(9.5), _font(9.5, bold=True)
         x1, x2 = _px(104), _px(200)
         rows = [
-            (x1, 0, "GTIN:", pallet.gtin or "-", _px(60)),
+            (x1, 0, "GTIN:", _shown_gtin(pallet.gtin), _px(60)),
             (x1, 1, "Production Date:", pallet.production_date, _px(60)),
             (x1, 2, "Cartons on Pallet:", f"{pallet.carton_count:,}", _px(60)),
             (x2, 0, "Pallet Qty:", f"{pallet.quantity:,}", self.right - x2 - _px(33)),
@@ -298,9 +315,10 @@ class _Layout:
             (x1 + _px(33), y), pallet.description,
             font=_fit_font(draw, pallet.description, self.right - x1 - _px(33), 9.5, 6.5), fill=0,
         )
-        if pallet.gtin:
+        pallet_gtin = gtin14_or_none(pallet.gtin)
+        if pallet_gtin:
             contents = build_contents_element_string(
-                pallet.gtin, pallet.production_date, pallet.quantity, pallet.batch
+                pallet_gtin, pallet.production_date, pallet.quantity, pallet.batch
             )
             draw.text(
                 (x1, _px(top + 2.0 + 4 * 4.9)), contents,

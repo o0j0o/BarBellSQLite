@@ -17,10 +17,10 @@ def test_normalize_gtin_pads_valid_13_digit_gtin_to_14():
     assert normalize_gtin("6291041500213") == "06291041500213"
 
 
-def test_normalize_gtin_pads_valid_8_digit_gtin_to_14():
-    # Built and check-digit-verified with the same algorithm independently
-    # before writing this module - not copied from normalize_gtin itself.
-    assert normalize_gtin("12345670") == "00000012345670"
+def test_normalize_gtin_no_longer_accepts_an_8_digit_gtin():
+    # 1.1.21 Beta: only 12, 13 or 14 digits are accepted (see tests/test_gtin14.py).
+    with pytest.raises(InvalidGTINError, match="12, 13 or 14"):
+        normalize_gtin("12345670")
 
 
 def test_normalize_gtin_accepts_already_14_digit_gtin():
@@ -28,7 +28,7 @@ def test_normalize_gtin_accepts_already_14_digit_gtin():
 
 
 def test_normalize_gtin_strips_leading_and_trailing_whitespace():
-    assert normalize_gtin("  12345670  ") == "00000012345670"
+    assert normalize_gtin("  000012345670  ") == "00000012345670"
 
 
 def test_normalize_gtin_strips_internal_whitespace_too():
@@ -44,7 +44,7 @@ def test_normalize_gtin_strips_internal_whitespace_too():
 
 def test_normalize_gtin_rejects_wrong_check_digit():
     with pytest.raises(InvalidGTINError, match="check digit"):
-        normalize_gtin("12345671")  # last digit should be 0, not 1
+        normalize_gtin("636191036408")  # last digit should be 7, not 8
 
 
 def test_normalize_gtin_rejects_non_digit_characters():
@@ -53,7 +53,7 @@ def test_normalize_gtin_rejects_non_digit_characters():
 
 
 def test_normalize_gtin_rejects_invalid_length():
-    with pytest.raises(InvalidGTINError, match="8, 12, 13, or 14"):
+    with pytest.raises(InvalidGTINError, match="12, 13 or 14"):
         normalize_gtin("123456789")  # 9 digits - not a valid GTIN length
 
 
@@ -63,7 +63,7 @@ def test_normalize_gtin_rejects_invalid_length_after_stripping_real_short_value(
     despaces to '012061' - only 6 digits, an incomplete/garbage entry that
     must be caught, not silently accepted.
     """
-    with pytest.raises(InvalidGTINError, match="8, 12, 13, or 14"):
+    with pytest.raises(InvalidGTINError, match="12, 13 or 14"):
         normalize_gtin("0 12061")
 
 

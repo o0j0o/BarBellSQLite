@@ -61,7 +61,7 @@ from src.gs1 import (
     build_sscc_barcode_data,
     build_sscc_element_string,
 )
-from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, classify_gtin_source, normalize_gtin
+from src.gtin import GTIN_SOURCE_MANUAL_OVERRIDE, InvalidGTINError, checked_gtin14, classify_gtin_source
 from src.labels import (
     assemble_label_rows,
     get_product_info,
@@ -585,7 +585,11 @@ class BarBellApp(tk.Tk):
         """
         raw = self.gtin_entry_var.get()
         try:
-            normalized = normalize_gtin(raw)
+            normalized = checked_gtin14(
+                raw,
+                job_number=self.job_number_var.get().strip(),
+                product=f"{self._product.description} (P/N {self._product.prod_num})",
+            )
         except InvalidGTINError as exc:
             messagebox.showerror("Invalid GTIN", str(exc))
             return None
@@ -845,6 +849,12 @@ class BarBellApp(tk.Tk):
                 f"unchanged:\n{exc}\n\nClose whatever has it open, then use Job/Label History's "
                 f"Reprint Selected to export this run again (same SSCCs, no new ones).",
             )
+            return
+        except InvalidGTINError as exc:
+            messagebox.showerror("Invalid GTIN - nothing exported", str(exc))
+            return
+        except InvalidGTINError as exc:
+            messagebox.showerror("Invalid GTIN - nothing exported", str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
@@ -1202,6 +1212,9 @@ class BarBellApp(tk.Tk):
                     f"Reprint Selected again.",
                     parent=win,
                 )
+                return
+            except InvalidGTINError as exc:
+                messagebox.showerror("Invalid GTIN - nothing exported", str(exc), parent=win)
                 return
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Reprint failed", str(exc), parent=win)
@@ -1869,13 +1882,29 @@ class BarBellApp(tk.Tk):
             return {
                 "gtin": first.gtin, "batch": first.batch, "production_date": earliest_date,
                 "packing_slip_number": first.packing_slip_number, "job_number": first.job_number,
-                "quantity": total_qty,
+                "quantity": total_qty, "product": f"item {first.item_number} (P/N {first.product_no})",
             }
+
+        def pallet_gtin_ok(fields) -> bool:
+            """Puts the pallet's GTIN through the one GTIN helper (src.gtin) - so the (02) barcode
+            carries the same 14-digit value as the carton labels - and refuses, with a message
+            naming the job, product and value, if it is not valid. Called before anything is
+            drawn, issued or written."""
+            try:
+                fields["gtin"] = checked_gtin14(
+                    fields["gtin"], job_number=fields["job_number"], product=fields["product"]
+                )
+            except InvalidGTINError as exc:
+                messagebox.showerror("Invalid GTIN - nothing exported", str(exc), parent=win)
+                return False
+            return True
 
         def preview_barcode():
             fields = pallet_reference_fields()
             if fields is None:
                 messagebox.showerror("Nothing scanned", "Scan at least one carton first.", parent=win)
+                return
+            if not pallet_gtin_ok(fields):
                 return
 
             contents_data = build_contents_barcode_data(
@@ -1913,6 +1942,8 @@ class BarBellApp(tk.Tk):
             fields = pallet_reference_fields()
             if fields is None:
                 messagebox.showerror("Nothing scanned", "Scan at least one carton first.", parent=win)
+                return
+            if not pallet_gtin_ok(fields):
                 return
 
             expected = expected_count() or len(scanned_cartons)
@@ -1998,6 +2029,9 @@ class BarBellApp(tk.Tk):
                     "Job/Label History to export it again - it will use this SAME SSCC, not a new one.",
                     parent=win,
                 )
+                return
+            except InvalidGTINError as exc:
+                messagebox.showerror("Invalid GTIN - nothing exported", str(exc), parent=win)
                 return
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror(

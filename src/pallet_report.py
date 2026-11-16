@@ -29,6 +29,7 @@ from src.gs1 import (
     build_sscc_barcode_data,
     build_sscc_element_string,
 )
+from src.gtin import gtin14_or_none
 from src.sscc import is_test_sscc
 from src.version import version_string
 
@@ -153,12 +154,14 @@ def _fit_mono(draw, text: str, max_px: int, start_pt: float, min_pt: float = 5.0
 
 def _carton_contents_barcode(carton: PalletReportCarton) -> tuple[str, str] | None:
     """(raw barcode data, human-readable AI string) for the carton's
-    contents barcode, or None if the carton has no GTIN to build one from."""
-    if not carton.gtin or not carton.production_date:
+    contents barcode, or None if the carton has no valid GTIN to build one from.
+    The GTIN is the same 14-digit value (src.gtin) the BarTender label carries."""
+    gtin = gtin14_or_none(carton.gtin)
+    if not gtin or not carton.production_date:
         return None
     return (
-        build_contents_barcode_data(carton.gtin, carton.production_date, carton.quantity, carton.batch),
-        build_contents_element_string(carton.gtin, carton.production_date, carton.quantity, carton.batch),
+        build_contents_barcode_data(gtin, carton.production_date, carton.quantity, carton.batch),
+        build_contents_element_string(gtin, carton.production_date, carton.quantity, carton.batch),
     )
 
 
@@ -334,7 +337,7 @@ def render_pallet_report_pages(
                 )
             else:
                 draw.text(
-                    (_px(COL_BARCODE), top), "no barcode - carton has no GTIN on record",
+                    (_px(COL_BARCODE), top), "no barcode - carton has no valid GTIN on record",
                     font=small_font, fill=0,
                 )
 

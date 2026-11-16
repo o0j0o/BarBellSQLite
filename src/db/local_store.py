@@ -68,6 +68,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.dates import normalize_production_date
+from src.gtin import checked_gtin14
 from src.sscc import SSCC_LENGTH, TEST_SERIAL_WIDTH, TEST_SSCC_LEAD
 
 STATUS_ORIGINAL = "original"
@@ -518,23 +519,47 @@ def count_label_history(
         conn.close()
 
 
+def checked_csv_gtins(rows) -> list[str]:
+    """The 14-digit GTIN for each row about to be exported, in order. Raises
+    InvalidGTINError naming the job, product and bad value if any row's GTIN is
+    blank or invalid - see write_flat_csv()."""
+    rows = list(rows)
+    return [
+        checked_gtin14(
+            r.gtin,
+            job_number=r.job_number,
+            product=f"{r.item_description or r.item_number} (P/N {r.product_no})",
+        )
+        for r in rows
+    ]
+
+
 def write_flat_csv(rows, out_path: Path | str) -> Path:
     """Writes `rows` (FlatLabelRow-shaped) to out_path in BarTender's flat
     format. The one place that format is written, so record-generation,
     reprint-export, and pallet CSVs can never drift apart. CartonCount is
     blank for carton rows (only pallet rows carry one); LabelType is always
-    CARTON or PALLET."""
+    CARTON or PALLET.
+
+    The GTIN column is ALWAYS the 14-digit GTIN with its check digit, from
+    src.gtin's one helper - carton (AI 01), pallet (AI 02), reprint and test
+    files alike. Every row is checked BEFORE the file is opened: if any GTIN is
+    blank or fails validation, InvalidGTINError is raised (naming the job, the
+    product and the bad value) and nothing is written. BarTender recalculates
+    the check digit itself, so a bad GTIN let through here would print looking
+    perfectly valid."""
+    gtins = checked_csv_gtins(rows)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_FIELDNAMES)
-        for r in rows:
+        for r, gtin in zip(rows, gtins):
             writer.writerow(
                 [
                     r.job_number, r.packing_slip_number, r.customer_number, r.customer_name,
                     r.product_no, r.item_number, r.item_description, r.quantity, r.batch,
-                    r.production_date, r.sscc, r.gtin or "", r.package_index, r.label_copy_index,
+                    r.production_date, r.sscc, gtin, r.package_index, r.label_copy_index,
                     getattr(r, "carton_count", None) or "",
                     getattr(r, "label_type", LABEL_TYPE_CARTON),
                 ]
@@ -614,12 +639,16 @@ def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatL
                 ),
             )
             new_ids.append(cur.lastrowid)
-        conn.commit()
 
         placeholders = ",".join("?" * len(new_ids))
         cur = conn.execute(f"{_JOIN_SELECT} WHERE l.id IN ({placeholders})", new_ids)
         rows_by_id = {row[14]: _row_to_flat(row) for row in cur.fetchall()}  # column 14 is l.id
-        return [rows_by_id[new_id] for new_id in new_ids]
+        reprint_rows = [rows_by_id[new_id] for new_id in new_ids]
+        # A label whose GTIN the CSV writer would refuse is refused here, before the reprint is
+        # committed - so nothing is logged for a file that will never be written.
+        checked_csv_gtins(reprint_rows)
+        conn.commit()
+        return reprint_rows
     finally:
         conn.close()
 
