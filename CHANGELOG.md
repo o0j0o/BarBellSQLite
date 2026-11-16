@@ -3,6 +3,12 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.22 Beta - 2026-11-16
+
+- Installer package is now **BarBell-Setup-1.2.2-Beta.exe**, built from this code so the installed app carries the
+  14-digit GTIN rules of 1.1.21 Beta (the 1.2.1 package does not have them). The earlier installer is kept in
+  `installer/Output/previous/`. No change to the app itself.
+
 ## 1.1.21 Beta - 2026-11-16
 
 - **The GTIN is always carried as 14 digits, including its check digit.** The BarTender template drops the last digit,
