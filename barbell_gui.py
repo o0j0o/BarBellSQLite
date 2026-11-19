@@ -218,7 +218,7 @@ class BarBellApp(tk.Tk):
         self._selected_line_item = None
         self._product = None
         self._looked_up_job = None  # the job number of the last successful Find Packing Slips
-        self._guardrail_cleared_key = None  # (job, slip, product, test) the operator pressed Continue for
+        self._guardrail_cleared_key = None  # (job, slip, product) the operator pressed Continue for
 
         self._load_logos()
         self._build_menu()
@@ -432,8 +432,6 @@ class BarBellApp(tk.Tk):
             variable=self.test_mode_var,
         )
         self.test_mode_checkbox.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        # "Already used" only counts labels of the same kind (real vs test), so a change here can change it.
-        self.test_mode_var.trace_add("write", lambda *_args: self._refresh_guardrails())
 
         action_frame = ttk.Frame(self, padding=10)
         action_frame.grid(row=6, column=0, sticky="ew")
@@ -493,23 +491,22 @@ class BarBellApp(tk.Tk):
         job = self._looked_up_job
         if not job:
             return False, False, False, None
-        test_mode = bool(self.test_mode_var.get())
         slip = self._selected_slip
         item = self._selected_line_item
         slip_no = slip.number if slip is not None else None
         product_no = item.product_number if item is not None else None
         db = self._active_db_file()
         try:
-            ticket_used = labels_already_generated(db, job, test_mode=test_mode)
+            ticket_used = labels_already_generated(db, job)
             slip_used = ticket_used and bool(slip_no) and labels_already_generated(
-                db, job, packing_slip_number=slip_no, test_mode=test_mode
+                db, job, packing_slip_number=slip_no
             )
             product_used = slip_used and bool(product_no) and labels_already_generated(
-                db, job, packing_slip_number=slip_no, product_no=product_no, test_mode=test_mode
+                db, job, packing_slip_number=slip_no, product_no=product_no
             )
         except Exception:  # noqa: BLE001 - a guardrail must never stop the operator working if the history cannot be read
             return False, False, False, None
-        return ticket_used, slip_used, product_used, (job, slip_no, product_no, test_mode)
+        return ticket_used, slip_used, product_used, (job, slip_no, product_no)
 
     def _refresh_guardrails(self):
         """Shows the red messages that apply, stacked in order (Ticket, Packing Slip, Product), with Continue

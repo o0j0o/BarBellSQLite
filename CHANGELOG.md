@@ -3,6 +3,16 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.24 Beta - 2026-11-19
+
+- **Test mode labels now count as "used".** The red "Labels have been generated for this ..." messages (and the
+  Continue block) now look at real labels and test labels together, whichever way the next run will be made. So
+  generating test labels twice for the same job, slip and product now stops at Continue the second time, and test
+  labels made earlier warn a real run (and the other way round). Ticking or unticking Test mode no longer changes
+  the messages, and a Continue stays valid across it. Voided labels and pallet rows still do not count.
+  `labels_already_generated()` lost its `test_mode` argument; tests updated (22 in `tests/test_guardrails.py`).
+- The Operator Guide still says real and test labels are counted separately; it needs the same update.
+
 ## 1.1.23 Beta - 2026-11-19
 
 - **"Labels have been generated" guardrails.** Up to three red messages are stacked to the right of the Find Packing

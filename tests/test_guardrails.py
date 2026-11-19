@@ -157,20 +157,40 @@ def test_looking_up_another_job_clears_the_messages(screen):
     assert shown(app) == []
 
 
-# --- Test mode and real labels are kept apart -----------------------------------------------------------
+# --- Test mode labels count as used, and so do real ones, whichever way the next run is made ---------------
 
-def test_real_labels_do_not_count_for_a_test_run_and_the_checkbox_re_checks(screen):
+@pytest.mark.parametrize("labels_are_test", [True, False])
+@pytest.mark.parametrize("next_run_is_test", [True, False])
+def test_test_and_real_labels_both_count_whatever_mode_the_next_run_is_in(screen, labels_are_test, next_run_is_test):
     app, db, _w = screen
-    add_labels(db, test=False)  # real labels
+    add_labels(db, test=labels_are_test)
+    app.test_mode_var.set(next_run_is_test)
     find_job(app)
     pick_slip(app)
-    assert shown(app) == []  # Test mode is on: real labels are not "used" for a practice run
-    app.test_mode_var.set(False)  # untick: now it is a real run
-    app.update()
     assert shown(app) == [TICKET_MSG, SLIP_MSG, PRODUCT_MSG]
-    app.test_mode_var.set(True)
+    assert continue_visible(app)
+
+
+def test_ticking_or_unticking_test_mode_changes_nothing(screen):
+    app, db, _w = screen
+    add_labels(db, test=True)
+    find_job(app)
+    pick_slip(app)
+    before = shown(app)
+    app.test_mode_var.set(False)
     app.update()
-    assert shown(app) == []
+    assert shown(app) == before == [TICKET_MSG, SLIP_MSG, PRODUCT_MSG]
+
+
+def test_continue_survives_a_change_of_test_mode(screen):
+    app, db, _w = screen
+    add_labels(db, test=True)
+    find_job(app)
+    pick_slip(app)
+    app.guardrail_continue_button.invoke()
+    app.test_mode_var.set(False)
+    app.update()
+    assert not continue_visible(app) and not app._guardrail_blocking()  # still the same job, slip and product
 
 
 # --- Continue ---------------------------------------------------------------------------------------------
@@ -240,7 +260,14 @@ def test_labels_already_generated_by_ticket_slip_and_product(tmp_path):
     assert not labels_already_generated(db, "J2")
     assert not labels_already_generated(db, "J1", packing_slip_number="S2")
     assert not labels_already_generated(db, "J1", packing_slip_number="S1", product_no="P2")
-    assert not labels_already_generated(db, "J1", test_mode=True)  # real labels do not count for a test run
+
+
+def test_test_labels_count_too(tmp_path):
+    db = tmp_path / "x.db"
+    add_labels(db, job="J1", slip="S1", product="P1", test=True)
+    assert labels_already_generated(db, "J1")
+    assert labels_already_generated(db, "J1", packing_slip_number="S1", product_no="P1")
+    assert not labels_already_generated(db, "J1", packing_slip_number="S2")
 
 
 def test_voided_labels_do_not_count(tmp_path):

@@ -592,21 +592,20 @@ def labels_already_generated(
     job_number: str,
     packing_slip_number: str | None = None,
     product_no: str | None = None,
-    test_mode: bool = False,
 ) -> bool:
     """True if BarBell has already generated carton labels for this job (Ticket) - and, when given, for this
     packing slip and/or this product (P/N) on that job. Read-only. It drives the red "Labels have been
     generated for this ..." messages on the main screen.
 
-    Only labels of the same kind count: real labels for a real run, test labels (Test and Demo mode) for a
-    test run, so practice runs never trigger a warning on real work. Voided labels and pallet rows do not
-    count (a pallet only repeats cartons that are already counted). Labels from before 1.1.17 carry no
-    packing slip / product of their own, so the job's row is used for those."""
+    Real labels and test labels (Test and Demo mode) both count, whichever kind the next run will be.
+    Voided labels and pallet rows do not count (a pallet only repeats cartons that are already counted).
+    Labels from before 1.1.17 carry no packing slip / product of their own, so the job's row is used for
+    those."""
     sql = (
         "SELECT 1 FROM labels l JOIN jobs j ON j.job_number = l.job_number "
-        "WHERE l.job_number = ? AND l.label_type = ? AND l.status != ? AND j.test_mode = ?"
+        "WHERE l.job_number = ? AND l.label_type = ? AND l.status != ?"
     )
-    params: list = [job_number, LABEL_TYPE_CARTON, STATUS_VOID, int(bool(test_mode))]
+    params: list = [job_number, LABEL_TYPE_CARTON, STATUS_VOID]
     if packing_slip_number:
         sql += " AND COALESCE(l.packing_slip_number, j.packing_slip_number) = ?"
         params.append(packing_slip_number)
