@@ -3,6 +3,27 @@
 Version and build date are tracked in a single place, `src/version.py` -
 never hardcoded anywhere else. See that file for the versioning rules.
 
+## 1.1.23 Beta - 2026-11-19
+
+- **"Labels have been generated" guardrails.** Up to three red messages are stacked to the right of the Find Packing
+  Slips button (using the empty red line that was under Job number, so the form does not get taller), in this order
+  and with this exact wording:
+  - "Labels have been generated for this Ticket No." - after Find Packing Slips, if BarBell's history already has
+    labels for that job number.
+  - "Labels have been generated for this Packing Slip No." - when the picked packing slip already has labels on that job.
+  - "Labels have been generated for this Product No." - when the picked P/N already has labels on that job and slip.
+    It only shows when the Ticket and Packing Slip messages are showing, and it is the only one with a **Continue**
+    button. Until Continue is pressed, Preview Barcode and Generate Labels stop with a warning and issue nothing.
+    Continue is a plain click for now (it is where the override will go). It covers only that product: picking
+    another used product asks again.
+- What counts as "used" (defaults, easy to change): carton labels that are not voided, of the same kind as the run -
+  real labels for a real run, test labels for a Test or Demo run (ticking or unticking Test mode re-checks), so
+  practice runs never warn on real work. Labels from before 1.1.17 are matched through the job's own row. If the
+  history cannot be read, no message shows and nothing is blocked.
+- New `labels_already_generated()` in the local store; 17 new tests (`tests/test_guardrails.py`). The shared test
+  window is reset before each test so a job looked up in one test cannot block the next.
+- Not covered yet: the Operator Guide, the Pallet Labels screen and Reprint Selected (not part of this guardrail).
+
 ## 1.1.22 Beta - 2026-11-16
 
 - Installer package is now **BarBell-Setup-1.2.2-Beta.exe**, built from this code so the installed app carries the
