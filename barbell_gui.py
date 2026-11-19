@@ -42,6 +42,7 @@ from src.db.local_store import (
     create_reprint_rows,
     count_label_history,
     describe_labels,
+    labels_already_generated,
     fetch_job_report,
     fetch_label_history,
     fetch_pallet_report,
@@ -108,6 +109,12 @@ HISTORY_PERIODS = {
     "All history": (None, ""),
 }
 DEFAULT_LABELS_PER_PACKAGE = "1"  # "Logistics labels per package" starts at 1 (and comes back to 1 if left blank)
+
+# The red "already used" guardrail messages beside the Find Packing Slips button (exact wording).
+TICKET_USED_MESSAGE = "Labels have been generated for this Ticket No."
+SLIP_USED_MESSAGE = "Labels have been generated for this Packing Slip No."
+PRODUCT_USED_MESSAGE = "Labels have been generated for this Product No."
+GUARDRAIL_RED = "#c0392b"
 HISTORY_DEFAULT_PERIOD = "Last 90 days"
 HISTORY_ALL_PERIOD = "All history"
 
@@ -210,6 +217,8 @@ class BarBellApp(tk.Tk):
         self._line_items = []
         self._selected_line_item = None
         self._product = None
+        self._looked_up_job = None  # the job number of the last successful Find Packing Slips
+        self._guardrail_cleared_key = None  # (job, slip, product) the operator pressed Continue for
 
         self._load_logos()
         self._build_menu()
@@ -241,12 +250,14 @@ class BarBellApp(tk.Tk):
             self.demo_hint_label.config(
                 text=f"Demo Mode - try job numbers: {', '.join(DEMO_JOB_NUMBERS)}"
             )
+            self.demo_hint_label.grid()
             self.test_mode_var.set(True)
             self.test_mode_checkbox.config(state="disabled")
         else:
             self.title(f"BarBell {version_string()}")
             self.demo_banner.grid_remove()
             self.demo_hint_label.config(text="")
+            self.demo_hint_label.grid_remove()  # its empty row is the room the guardrail messages use instead
             if self.settings.disable_test_mode_checkbox:
                 # Setup's "Disable Test Mode checkbox on main form": off and greyed out.
                 self.test_mode_var.set(False)
@@ -342,6 +353,26 @@ class BarBellApp(tk.Tk):
         self.demo_hint_label = ttk.Label(job_frame, text="", foreground="#c0392b", font=("", 8))
         self.demo_hint_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
+        # Guardrails: up to three red messages stacked to the RIGHT of Find Packing Slips (so the form does
+        # not get taller), the last with a Continue button. Shown/hidden by _refresh_guardrails().
+        ttk.Style(self).configure("Guardrail.TButton", padding=(10, 0), font=("", 8))
+        self.guardrail_frame = ttk.Frame(job_frame)
+        self.guardrail_frame.grid(row=0, column=3, rowspan=2, sticky="nw", padx=(18, 0))
+        guard_font = ("", 8, "bold")
+        self.ticket_used_label = ttk.Label(
+            self.guardrail_frame, text=TICKET_USED_MESSAGE, foreground=GUARDRAIL_RED, font=guard_font
+        )
+        self.slip_used_label = ttk.Label(
+            self.guardrail_frame, text=SLIP_USED_MESSAGE, foreground=GUARDRAIL_RED, font=guard_font
+        )
+        self.product_used_label = ttk.Label(
+            self.guardrail_frame, text=PRODUCT_USED_MESSAGE, foreground=GUARDRAIL_RED, font=guard_font
+        )
+        self.guardrail_continue_button = ttk.Button(
+            self.guardrail_frame, text="Continue", style="Guardrail.TButton", command=self._guardrail_continue
+        )
+        self.guardrail_frame.grid_remove()  # nothing to say until a job has been looked up
+
         slip_frame = ttk.LabelFrame(self, text="2. Packing Slip", padding=10)
         slip_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=5)
         self.slip_listbox = tk.Listbox(slip_frame, width=90, height=6, exportselection=False)
@@ -425,6 +456,8 @@ class BarBellApp(tk.Tk):
         self._reset_product_selection()
         self._slips = []
         self._selected_slip = None
+        self._looked_up_job = None
+        self._refresh_guardrails()
         if not self.labels_per_package_var.get().strip():
             self.labels_per_package_var.set(DEFAULT_LABELS_PER_PACKAGE)
 
@@ -447,6 +480,73 @@ class BarBellApp(tk.Tk):
                 f"ship date {slip.ship_date} - qty {slip.ship_quantity} - "
                 f"{slip.no_package} package(s) per Label Traxx",
             )
+        self._looked_up_job = job_number
+        self._refresh_guardrails()  # the Ticket message, if labels were already generated for this job
+
+    # --- guardrails: "labels have been generated for this ..." ---------------
+
+    def _guardrail_state(self):
+        """(ticket_used, slip_used, product_used, key) for what is looked up/selected right now. The Slip message
+        needs the Ticket one, and the Product message needs both (so it is only ever the third line)."""
+        job = self._looked_up_job
+        if not job:
+            return False, False, False, None
+        slip = self._selected_slip
+        item = self._selected_line_item
+        slip_no = slip.number if slip is not None else None
+        product_no = item.product_number if item is not None else None
+        db = self._active_db_file()
+        try:
+            ticket_used = labels_already_generated(db, job)
+            slip_used = ticket_used and bool(slip_no) and labels_already_generated(
+                db, job, packing_slip_number=slip_no
+            )
+            product_used = slip_used and bool(product_no) and labels_already_generated(
+                db, job, packing_slip_number=slip_no, product_no=product_no
+            )
+        except Exception:  # noqa: BLE001 - a guardrail must never stop the operator working if the history cannot be read
+            return False, False, False, None
+        return ticket_used, slip_used, product_used, (job, slip_no, product_no)
+
+    def _refresh_guardrails(self):
+        """Shows the red messages that apply, stacked in order (Ticket, Packing Slip, Product), with Continue
+        beside the Product one until the operator presses it."""
+        ticket_used, slip_used, product_used, key = self._guardrail_state()
+        for label, show in (
+            (self.ticket_used_label, ticket_used),
+            (self.slip_used_label, slip_used),
+            (self.product_used_label, product_used),
+        ):
+            label.grid_forget()
+        row = 0
+        for label, show in (
+            (self.ticket_used_label, ticket_used),
+            (self.slip_used_label, slip_used),
+            (self.product_used_label, product_used),
+        ):
+            if show:
+                label.grid(row=row, column=0, sticky="w")
+                row += 1
+        self.guardrail_continue_button.grid_forget()
+        if product_used and key != self._guardrail_cleared_key:
+            self.guardrail_continue_button.grid(row=2, column=1, sticky="w", padx=(10, 0))
+        if ticket_used:
+            self.guardrail_frame.grid()
+        else:
+            self.guardrail_frame.grid_remove()
+
+    def _guardrail_blocking(self) -> bool:
+        """True while the Product message is showing and Continue has not been pressed for this selection."""
+        _ticket, _slip, product_used, key = self._guardrail_state()
+        return product_used and key != self._guardrail_cleared_key
+
+    def _guardrail_continue(self):
+        """Continue: lets the operator carry on with this job/slip/product. (For now this is just a click;
+        it is where the override will go.)"""
+        _ticket, _slip, product_used, key = self._guardrail_state()
+        if product_used:
+            self._guardrail_cleared_key = key
+        self._refresh_guardrails()
 
     def _set_gtin_status_text(self, text: str, error: bool = False):
         """error=True renders in red - used for a blocking, invalid-GTIN warning
@@ -502,6 +602,7 @@ class BarBellApp(tk.Tk):
             return
         self._selected_slip = self._slips[selection[0]]
         self._reset_product_selection()
+        self._refresh_guardrails()  # the Packing Slip message, if this slip already has labels
 
         try:
             with self._connect() as conn:
@@ -524,6 +625,7 @@ class BarBellApp(tk.Tk):
         if not selection:
             return
         self._selected_line_item = self._line_items[selection[0]]
+        self._refresh_guardrails()  # the Product message (and Continue), if this P/N already has labels
 
         try:
             with self._connect() as conn:
@@ -621,6 +723,14 @@ class BarBellApp(tk.Tk):
             return None
         if self._product is None:
             messagebox.showerror("Incomplete", "Couldn't load product info for this line item.")
+            return None
+        if self._guardrail_blocking():
+            # The Product No. message is showing: labels already exist for this job, slip and P/N.
+            messagebox.showwarning(
+                "Labels already generated",
+                f"{PRODUCT_USED_MESSAGE}\n\nClick Continue (beside the red messages at the top) "
+                "if you really mean to generate them again.",
+            )
             return None
 
         gtin = self._resolve_gtin()

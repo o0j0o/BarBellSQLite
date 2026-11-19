@@ -587,6 +587,38 @@ def describe_labels(label_ids: list[int], db_path: Path | str) -> list[tuple[str
         conn.close()
 
 
+def labels_already_generated(
+    db_path: Path | str,
+    job_number: str,
+    packing_slip_number: str | None = None,
+    product_no: str | None = None,
+) -> bool:
+    """True if BarBell has already generated carton labels for this job (Ticket) - and, when given, for this
+    packing slip and/or this product (P/N) on that job. Read-only. It drives the red "Labels have been
+    generated for this ..." messages on the main screen.
+
+    Real labels and test labels (Test and Demo mode) both count, whichever kind the next run will be.
+    Voided labels and pallet rows do not count (a pallet only repeats cartons that are already counted).
+    Labels from before 1.1.17 carry no packing slip / product of their own, so the job's row is used for
+    those."""
+    sql = (
+        "SELECT 1 FROM labels l JOIN jobs j ON j.job_number = l.job_number "
+        "WHERE l.job_number = ? AND l.label_type = ? AND l.status != ?"
+    )
+    params: list = [job_number, LABEL_TYPE_CARTON, STATUS_VOID]
+    if packing_slip_number:
+        sql += " AND COALESCE(l.packing_slip_number, j.packing_slip_number) = ?"
+        params.append(packing_slip_number)
+    if product_no:
+        sql += " AND COALESCE(l.product_no, j.product_no) = ?"
+        params.append(product_no)
+    conn = _connect(db_path)
+    try:
+        return conn.execute(sql + " LIMIT 1", params).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def create_reprint_rows(label_ids: list[int], db_path: Path | str) -> list[FlatLabelRow]:
     """
     For each given labels.id, appends a NEW 'reprint' row copying that

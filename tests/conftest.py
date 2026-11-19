@@ -29,3 +29,16 @@ def _pinned_today(monkeypatch):
     import src.dates
 
     monkeypatch.setattr(src.dates, "today", lambda: datetime.date(2026, 11, 13))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_guardrails(request):
+    """The shared main window remembers the last job looked up (for the red 'labels have been generated'
+    messages), and a test that looked up a job must not make the next test's Preview/Generate stop at the
+    Product No. block. Cleared before every test that uses the shared window."""
+    if "app" in request.fixturenames:
+        window = request.getfixturevalue("app")
+        window._looked_up_job = None
+        window._guardrail_cleared_key = None
+        window._refresh_guardrails()
+    yield
